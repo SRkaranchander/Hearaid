@@ -392,18 +392,30 @@ export default function LiveSign() {
         langName: langObj.name
       });
 
-      // Speak in multilingual voice
-      if (!speechMuted) {
-        speakInLanguage(translated, currentLang, { rate: speechRate });
-      }
+      // Notice: Automatic speech is disabled per user preference.
+      // Speech will trigger only when the user clicks 'Speak Out Loud'.
 
       addLog(
         'sign',
         `${icon} ${label} → [${langObj.flag} ${langObj.name}] "${translated}" (${source})`
       );
     },
-    [speechMuted, speechRate, addLog]
+    [addLog]
   );
+
+  const handleSpeakOutLoud = useCallback(() => {
+    if (speechMuted) return;
+    if (translatedOutput && (translatedOutput.translated || translatedOutput.original)) {
+      speakInLanguage(
+        translatedOutput.translated || translatedOutput.original,
+        selectedLanguage,
+        { rate: speechRate }
+      );
+    } else if (recognizedOutput && recognizedOutput !== '—') {
+      const textToSpeak = recognizedOutput.replace(/^[^\p{L}\p{N}\s]+/u, '').trim() || recognizedOutput;
+      speakInLanguage(textToSpeak, selectedLanguage, { rate: speechRate });
+    }
+  }, [translatedOutput, recognizedOutput, selectedLanguage, speechRate, speechMuted]);
 
   const drawAllHands = useCallback((allLandmarks) => {
     const canvas = canvasRef.current;
@@ -1434,6 +1446,20 @@ export default function LiveSign() {
             <span id="recognizedOutput" className="output-text">
               {recognizing ? recognizedOutput : '—'}
             </span>
+            <button
+              id="speakOutLoudBtn"
+              className="live-btn"
+              disabled={recognizedOutput === '—'}
+              style={{
+                background: recognizedOutput === '—' ? 'rgba(255,255,255,0.08)' : 'var(--accent-cyan, #06b6d4)',
+                color: recognizedOutput === '—' ? '#64748b' : '#ffffff',
+                minWidth: '160px',
+                fontWeight: 600
+              }}
+              onClick={handleSpeakOutLoud}
+            >
+              📢 Speak Out Loud
+            </button>
           </div>
 
           {/* Real-time Multilingual Translation Detail Card */}
@@ -1464,27 +1490,18 @@ export default function LiveSign() {
                   {translatedOutput.flag} "{translatedOutput.translated}"
                 </span>
               </div>
-              {!speechMuted && (
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  style={{
-                    background: 'rgba(56, 189, 248, 0.2)',
-                    color: '#38bdf8',
-                    fontSize: '12px',
-                    borderRadius: '6px'
-                  }}
-                  onClick={() =>
-                    speakInLanguage(
-                      translatedOutput.translated || translatedOutput.original,
-                      selectedLanguage,
-                      { rate: speechRate }
-                    )
-                  }
-                >
-                  🔊 Replay Voice
-                </button>
-              )}
+              <button
+                type="button"
+                className="live-btn"
+                style={{
+                  fontSize: '13px',
+                  padding: '7px 14px',
+                  fontWeight: 600
+                }}
+                onClick={handleSpeakOutLoud}
+              >
+                📢 Speak Out Loud
+              </button>
             </div>
           )}
         </section>
