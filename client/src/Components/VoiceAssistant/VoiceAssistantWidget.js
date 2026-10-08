@@ -233,16 +233,12 @@ export default function VoiceAssistantWidget() {
             };
 
             recognition.onresult = (event) => {
-                let interim = '';
-                for (let i = event.resultIndex; i < event.results.length; i++) {
-                    const transcriptPiece = event.results[i][0].transcript;
-                    if (event.results[i].isFinal) {
-                        finalTranscript += transcriptPiece;
-                    } else {
-                        interim += transcriptPiece;
-                    }
+                let full = '';
+                for (let i = 0; i < event.results.length; i++) {
+                    full += event.results[i][0].transcript;
                 }
-                setInputText(finalTranscript || interim);
+                finalTranscript = full.trim();
+                setInputText(finalTranscript);
             };
 
             recognition.onerror = (event) => {

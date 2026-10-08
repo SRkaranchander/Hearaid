@@ -161,19 +161,17 @@ export default function Convert() {
         for (let i = 0; i < event.results.length; i++) {
           transcriptAccum += event.results[i][0].transcript;
         }
-        if (transcriptAccum) {
-          setSpeechText(prev => {
-            const separator = prev && !prev.endsWith(' ') ? ' ' : '';
-            return prev ? `${prev}${separator}${transcriptAccum}` : transcriptAccum;
-          });
+        if (transcriptAccum && transcriptAccum.trim()) {
+          const cleanText = transcriptAccum.trim();
+          setSpeechText(cleanText);
           
           if (autoSignTimeout.current) clearTimeout(autoSignTimeout.current);
           autoSignTimeout.current = setTimeout(() => {
-            if (transcriptAccum.trim() && transcriptAccum !== lastSignedSpeech.current) {
-              lastSignedSpeech.current = transcriptAccum;
-              runSignRef.current(transcriptAccum);
+            if (cleanText && cleanText !== lastSignedSpeech.current) {
+              lastSignedSpeech.current = cleanText;
+              runSignRef.current(cleanText);
             }
-          }, 1200);
+          }, 1000);
         }
       };
 
