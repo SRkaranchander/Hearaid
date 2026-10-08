@@ -35,10 +35,24 @@ app.use(cors({
 }));
 app.use(express.json());
 
+const userRoutes = require('./routes/users');
+const messageRoutes = require('./routes/messages');
+const voiceRoutes = require('./routes/voice');
+
+// Base API route
+app.get(['/api', '/'], (req, res) => {
+  res.json({ status: 'ok', message: 'HearAid API is running' });
+});
+
 // Routes
-app.use('/api/users', require('./routes/users'));
-app.use('/api/messages', require('./routes/messages'));
-app.use('/api/voice', require('./routes/voice'));
+app.use('/api/users', userRoutes);
+app.use('/users', userRoutes);
+
+app.use('/api/messages', messageRoutes);
+app.use('/messages', messageRoutes);
+
+app.use('/api/voice', voiceRoutes);
+app.use('/voice', voiceRoutes);
 
 const User = require('./models/User');
 
@@ -65,4 +79,10 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+if (require.main === module) {
+  server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+}
+
+module.exports = app;
+module.exports.server = server;
+module.exports.io = io;

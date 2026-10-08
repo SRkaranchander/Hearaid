@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import io from 'socket.io-client';
 
-const socket = io(socketURL || 'https://hearaid-backend.onrender.com', {
+const socket = io(socketURL, {
   reconnection: true,
   reconnectionAttempts: Infinity,
   reconnectionDelay: 1000,
