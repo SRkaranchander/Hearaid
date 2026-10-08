@@ -3,6 +3,7 @@ import axios from 'axios';
 import { communityURL } from '../../Config/config';
 import './VoiceAssistant.css';
 import ClickSpark from '../animations/ClickSpark';
+import { SUPPORTED_LANGUAGES, translateText, getBestVoiceForLanguage } from '../../Utils/multilingualSpeech';
 
 const HEARAID_KNOWLEDGE = [
     {
@@ -146,13 +147,17 @@ export default function VoiceAssistantWidget() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    const [assistantLanguage, setAssistantLanguage] = useState(() => {
+        return localStorage.getItem('hearaid_lang') || 'en-US';
+    });
+
     // Auto-scroll chat to bottom
     useEffect(() => {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages, isThinking]);
 
     // Speak function using SpeechSynthesis
-    const speakText = (text) => {
+    const speakText = async (text) => {
         if (!('speechSynthesis' in window)) {
             console.warn("Speech synthesis is not supported in this browser.");
             return;
@@ -160,8 +165,19 @@ export default function VoiceAssistantWidget() {
 
         window.speechSynthesis.cancel(); // Stop any ongoing speech
 
-        const utterance = new SpeechSynthesisUtterance(text);
-        if (selectedVoice) utterance.voice = selectedVoice;
+        let spokenText = text;
+        if (!assistantLanguage.startsWith('en')) {
+            try {
+                spokenText = await translateText(text, assistantLanguage);
+            } catch (err) {
+                console.warn('Voice assistant translation error:', err);
+            }
+        }
+
+        const utterance = new SpeechSynthesisUtterance(spokenText);
+        const voice = selectedVoice || getBestVoiceForLanguage(assistantLanguage);
+        if (voice) utterance.voice = voice;
+        utterance.lang = assistantLanguage;
         utterance.rate = speechRate;
         utterance.pitch = 1.0;
 
@@ -376,12 +392,32 @@ export default function VoiceAssistantWidget() {
                     </div>
 
                     {/* Voice Controls Bar */}
-                    <div className="d-flex align-items-center justify-content-between px-3 py-2 border-bottom" style={{ fontSize: '0.8rem', background: 'rgba(0,0,0,0.02)' }}>
+                    <div className="d-flex align-items-center justify-content-between px-3 py-2 border-bottom flex-wrap gap-2" style={{ fontSize: '0.8rem', background: 'rgba(0,0,0,0.02)' }}>
+                        <div className="d-flex align-items-center gap-2">
+                            <label className="m-0 text-muted">Lang:</label>
+                            <select
+                                className="form-select form-select-sm py-0"
+                                style={{ width: '105px', fontSize: '0.75rem' }}
+                                value={assistantLanguage}
+                                onChange={(e) => {
+                                    const lang = e.target.value;
+                                    setAssistantLanguage(lang);
+                                    localStorage.setItem('hearaid_lang', lang);
+                                    const bestV = getBestVoiceForLanguage(lang);
+                                    if (bestV) setSelectedVoice(bestV);
+                                }}
+                            >
+                                {SUPPORTED_LANGUAGES.map((l) => (
+                                    <option key={l.code} value={l.code}>{l.flag} {l.name}</option>
+                                ))}
+                            </select>
+                        </div>
+
                         <div className="d-flex align-items-center gap-2">
                             <label className="m-0 text-muted">Voice:</label>
                             <select
                                 className="form-select form-select-sm py-0"
-                                style={{ width: '130px', fontSize: '0.75rem' }}
+                                style={{ width: '115px', fontSize: '0.75rem' }}
                                 value={selectedVoice?.name || ''}
                                 onChange={(e) => {
                                     const v = voices.find(v => v.name === e.target.value);
@@ -389,7 +425,7 @@ export default function VoiceAssistantWidget() {
                                 }}
                             >
                                 {voices.map((v, i) => (
-                                    <option key={i} value={v.name}>{v.name.slice(0, 18)}</option>
+                                    <option key={i} value={v.name}>{v.name.slice(0, 16)}</option>
                                 ))}
                             </select>
                         </div>
