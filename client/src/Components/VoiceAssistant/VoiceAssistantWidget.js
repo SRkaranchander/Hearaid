@@ -76,7 +76,7 @@ export default function VoiceAssistantWidget() {
     const [inputText, setInputText] = useState('');
     const [voices, setVoices] = useState([]);
     const [selectedVoice, setSelectedVoice] = useState(null);
-    const [speechRate, setSpeechRate] = useState(1.0);
+    const [speechRate] = useState(1.0);
     const [autoSpeak, setAutoSpeak] = useState(true);
     const [messages, setMessages] = useState([
         {
@@ -143,6 +143,7 @@ export default function VoiceAssistantWidget() {
                 window.speechSynthesis.cancel();
             }
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     // Auto-scroll chat to bottom
