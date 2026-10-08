@@ -147,9 +147,9 @@ export default function Convert() {
       }
 
       const recognition = new SpeechRecognition();
-      recognition.continuous = true;
+      recognition.continuous = false;
       recognition.interimResults = true;
-      recognition.lang = 'en-US';
+      recognition.lang = navigator.language || 'en-US';
 
       recognition.onstart = () => {
         setIsMicOn(true);
@@ -162,38 +162,45 @@ export default function Convert() {
           transcriptAccum += event.results[i][0].transcript;
         }
         if (transcriptAccum) {
-          setSpeechText(transcriptAccum);
-          // Auto animate after 1.5s pause
+          setSpeechText(prev => {
+            const separator = prev && !prev.endsWith(' ') ? ' ' : '';
+            return prev ? `${prev}${separator}${transcriptAccum}` : transcriptAccum;
+          });
+          
           if (autoSignTimeout.current) clearTimeout(autoSignTimeout.current);
           autoSignTimeout.current = setTimeout(() => {
             if (transcriptAccum.trim() && transcriptAccum !== lastSignedSpeech.current) {
               lastSignedSpeech.current = transcriptAccum;
               runSignRef.current(transcriptAccum);
             }
-          }, 1500);
+          }, 1200);
         }
       };
 
       recognition.onerror = (event) => {
-        console.warn('Speech recognition event error:', event?.error);
+        console.warn('Speech recognition event notice:', event?.error);
         if (event?.error === 'not-allowed') {
-          setMicError('Microphone permission blocked. Please click the lock icon in the address bar and allow mic access.');
+          setMicError('Microphone permission blocked. Please allow mic in your browser address bar.');
           setIsMicOn(false);
         } else if (event?.error === 'no-speech') {
-          // Normal timeout on silence, keep listening
+          // Normal silence, keep session ready
+        } else if (event?.error === 'network') {
+          setMicError('Network notice: Speech service briefly disconnected. Reconnecting...');
         } else {
           setMicError(`Mic notice: ${event?.error || 'listening'}`);
         }
       };
 
       recognition.onend = () => {
-        // Auto-reconnect if mic state should still be on
+        // Auto-reconnect continuously if user still has mic turned on
         if (isMicOn && recognitionRef.current) {
-          try {
-            recognitionRef.current.start();
-          } catch (_) {
-            setIsMicOn(false);
-          }
+          setTimeout(() => {
+            if (isMicOn && recognitionRef.current) {
+              try {
+                recognitionRef.current.start();
+              } catch (_) {}
+            }
+          }, 250);
         } else {
           setIsMicOn(false);
         }
