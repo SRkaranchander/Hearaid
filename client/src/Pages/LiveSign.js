@@ -246,7 +246,13 @@ export default function LiveSign() {
   const [liveAssembledSentence, setLiveAssembledSentence] = useState('');
   const [liveTranslatedSentence, setLiveTranslatedSentence] = useState('');
   const [isLiveTranslating, setIsLiveTranslating] = useState(false);
-  const streamRef = useRef(new RealtimeSignStream({ stabilityThreshold: 3 }));
+  const [streamMode, setStreamMode] = useState('spelling'); // 'spelling' (letters only) | 'all'
+  const streamRef = useRef(new RealtimeSignStream({ stabilityThreshold: 5, mode: 'spelling' }));
+  useEffect(() => {
+    if (streamRef.current) {
+      streamRef.current.setMode(streamMode);
+    }
+  }, [streamMode]);
 
   const [listening, setListening] = useState(false);
   const [captionText, setCaptionText] = useState('Transcript will appear here…');
@@ -502,10 +508,9 @@ export default function LiveSign() {
             if (realtimeMatch) {
               const liveDisplay = `${realtimeMatch.icon || '✋'} ${realtimeMatch.token}`;
               setLiveTrackingToken(liveDisplay);
-              setRecognizedOutput(liveDisplay);
-
               const streamRes = streamRef.current.feed(realtimeMatch);
               if (streamRes.newCommit) {
+                setRecognizedOutput(`${streamRes.newCommit.icon || '✋'} ${streamRes.newCommit.token}`);
                 handleRecognized(
                   streamRes.newCommit.token,
                   streamRes.newCommit.icon || '✋',
@@ -1535,16 +1540,62 @@ export default function LiveSign() {
                 <span style={{ fontSize: '13px', fontWeight: 600, color: '#38bdf8' }}>
                   ⚡ Live Dynamic Sign Tracking Stream (No Predefined Dataset)
                 </span>
-                <span
-                  className="badge"
-                  style={{
-                    background: 'rgba(56, 189, 248, 0.2)',
-                    color: '#38bdf8',
-                    fontSize: '11px'
-                  }}
-                >
-                  Live Pose: {liveTrackingToken || '—'}
-                </span>
+                <div className="d-flex gap-2 align-items-center flex-wrap">
+                  <div
+                    style={{
+                      background: 'rgba(255, 255, 255, 0.08)',
+                      borderRadius: '20px',
+                      padding: '2px',
+                      display: 'inline-flex',
+                      gap: '2px'
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{
+                        borderRadius: '16px',
+                        fontSize: '11px',
+                        padding: '2px 10px',
+                        background: streamMode === 'spelling' ? 'var(--accent-cyan, #06b6d4)' : 'transparent',
+                        color: streamMode === 'spelling' ? '#fff' : '#94a3b8',
+                        border: 'none',
+                        fontWeight: streamMode === 'spelling' ? 700 : 500
+                      }}
+                      onClick={() => setStreamMode('spelling')}
+                      title="Only assemble letters & numbers into clean words, filtering out accidental whole-word signs"
+                    >
+                      🔤 Letter-by-Letter Only
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{
+                        borderRadius: '16px',
+                        fontSize: '11px',
+                        padding: '2px 10px',
+                        background: streamMode === 'all' ? 'var(--accent-cyan, #06b6d4)' : 'transparent',
+                        color: streamMode === 'all' ? '#fff' : '#94a3b8',
+                        border: 'none',
+                        fontWeight: streamMode === 'all' ? 700 : 500
+                      }}
+                      onClick={() => setStreamMode('all')}
+                      title="Include conversational words (Hello, Help, Good) along with letters"
+                    >
+                      💬 All Signs
+                    </button>
+                  </div>
+                  <span
+                    className="badge"
+                    style={{
+                      background: 'rgba(56, 189, 248, 0.2)',
+                      color: '#38bdf8',
+                      fontSize: '11px'
+                    }}
+                  >
+                    Live Pose: {liveTrackingToken || '—'}
+                  </span>
+                </div>
               </div>
 
               {/* Real-time Accumulated Sentence Stream */}

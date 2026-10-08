@@ -97,14 +97,15 @@ export function trackHandPose(landmarks) {
     indexMiddleSpread < 0.25 &&
     Math.abs(indexTip.x - middleTip.x) < 0.12 * palmSpan;
 
-  // Hooked index (X): Index MCP is raised but PIP/DIP are sharply bent
+  // Hooked index (X): Index MCP is raised up, PIP is elevated, but DIP/Tip are sharply hooked down
   const isIndexHooked =
     !middleExt &&
     !ringExt &&
     !pinkyExt &&
-    norm(indexTip, indexMCP) > 0.45 &&
-    norm(indexTip, indexMCP) < 0.82 &&
-    indexTip.y > indexPIP.y - 0.1 * palmSpan;
+    indexPIP.y < indexMCP.y - 0.15 * palmSpan &&
+    indexTip.y > indexPIP.y + 0.08 * palmSpan &&
+    norm(indexTip, indexMCP) > 0.38 &&
+    norm(indexTip, indexMCP) < 0.85;
 
   // General postures
   const isFist = !indexExt && !middleExt && !ringExt && !pinkyExt;
@@ -173,6 +174,8 @@ export function classifySingleHandSign(h) {
 
   const {
     norm,
+    palmSpan,
+    wrist,
     thumbTip,
     indexTip,
     middleTip,
@@ -333,10 +336,10 @@ export function classifySingleHandSign(h) {
     return { token: '9', type: 'number', confidence: 0.92, icon: '9️⃣' };
   }
 
-  // 18. FIST / THUMBS VARIANTS: A, S, E, T, GOOD, BAD, YES
+  // 18. FIST / THUMBS VARIANTS: A, S, E, T, GOOD, BAD
   if (isFist) {
-    // Thumbs up -> GOOD
-    if (thumbUp) {
+    // Thumbs up -> GOOD (require intentional clear vertical thumb elevation)
+    if (thumbUp && thumbTip.y < wrist.y - 0.35 * palmSpan && thumbTip.y < indexMCP.y - 0.25 * palmSpan) {
       return { token: 'GOOD', type: 'word', confidence: 0.95, icon: '👍' };
     }
     // Thumbs down -> BAD
@@ -358,10 +361,6 @@ export function classifySingleHandSign(h) {
     // LETTER T: Thumb tucked between index and middle
     if (norm(thumbTip, indexMCP) < 0.35 && norm(thumbTip, middleMCP) < 0.35) {
       return { token: 'T', type: 'letter', confidence: 0.90, icon: '🇹' };
-    }
-    // Generic upright fist -> YES
-    if (isHandUpright) {
-      return { token: 'YES', type: 'word', confidence: 0.89, icon: '✊' };
     }
   }
 
@@ -506,12 +505,17 @@ export function classifyRealtimeSign(allLandmarks) {
  */
 export class RealtimeSignStream {
   constructor(options = {}) {
-    this.stabilityThreshold = options.stabilityThreshold || 3;
+    this.stabilityThreshold = options.stabilityThreshold || 5;
+    this.mode = options.mode || 'spelling'; // 'spelling' (letters/numbers only) | 'all'
     this.history = [];
     this.activeWord = '';
     this.sentence = '';
     this.lastCommittedToken = null;
     this.lastCommitTime = 0;
+  }
+
+  setMode(mode) {
+    this.mode = mode;
   }
 
   feed(classified) {
@@ -521,26 +525,41 @@ export class RealtimeSignStream {
       return { activeWord: this.activeWord, sentence: this.sentence, newCommit: null };
     }
 
+    // When in 'spelling' mode, ignore any full-word conversational signs
+    if (this.mode === 'spelling' && classified.type !== 'letter' && classified.type !== 'number') {
+      this.history = [];
+      return { activeWord: this.activeWord, sentence: this.sentence, newCommit: null };
+    }
+
     this.history.push(classified.token);
     if (this.history.length > this.stabilityThreshold * 2) {
       this.history.shift();
     }
 
-    const matches = this.history.filter((t) => t === classified.token).length;
+    // Require consecutive uninterrupted frames of the same gesture
+    let consecutiveMatches = 0;
+    for (let i = this.history.length - 1; i >= 0; i--) {
+      if (this.history[i] === classified.token) {
+        consecutiveMatches++;
+      } else {
+        break;
+      }
+    }
 
-    // Confirmed steady gesture: must match threshold AND not duplicate within 1.2s for identical token
-    if (
-      matches >= this.stabilityThreshold &&
-      (classified.token !== this.lastCommittedToken || now - this.lastCommitTime > 1200)
-    ) {
+    // Debounce: require threshold and prevent fast identical repetitions (must hold >2000ms or change sign)
+    const isSameAsLast = classified.token === this.lastCommittedToken;
+    const canCommit =
+      consecutiveMatches >= this.stabilityThreshold &&
+      (!isSameAsLast || now - this.lastCommitTime > 2000);
+
+    if (canCommit) {
       this.lastCommittedToken = classified.token;
       this.lastCommitTime = now;
-      this.history = []; // reset after commit
+      this.history = [];
 
       if (classified.type === 'letter' || classified.type === 'number') {
         this.activeWord += classified.token;
-      } else {
-        // Full word or conversational sign
+      } else if (this.mode === 'all') {
         if (this.activeWord) {
           this.sentence = (this.sentence + ' ' + this.activeWord).trim();
           this.activeWord = '';
