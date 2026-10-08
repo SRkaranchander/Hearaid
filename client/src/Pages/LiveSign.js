@@ -1,12 +1,10 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
   STANDARD_SIGN_CATALOG,
-  SignTemporalFilter,
-  ALPHABETS_LIST
+  SignTemporalFilter
 } from '../Utils/standardSignRecognizer';
 import {
-  classifyRealtimeSign,
-  RealtimeSignStream
+  classifyRealtimeSign
 } from '../Utils/realtimeSignTracker';
 import {
   SUPPORTED_LANGUAGES,
@@ -34,19 +32,35 @@ const HAND_CONNECTIONS = [
 const CLIP_DURATION_MS = 1200; // 1.2s window of motion for gesture matching
 const CLIP_FRAMES = 8;         // resampled keyframes per clip
 const MIN_FRAMES_REQUIRED = 3; // guard against empty clips
-const RECOGNIZE_EVERY_MS = 180;// continuous recognition throttle
+const RECOGNIZE_EVERY_MS = 150;// continuous recognition throttle
 const VECTOR_SIZE = 136;       // 66 (hand 1) + 66 (hand 2) + 4 (inter-hand relation)
 const RECORD_MS_TRAINING = 1500;
-const THRESHOLD = 1.15;
+const MATCH_THRESHOLD = 0.48;  // error threshold in palm-span units
 
 function singleHandFeature(landmarks) {
   if (!landmarks || landmarks.length === 0) {
     return new Array(66).fill(0);
   }
   const wrist = landmarks[0];
-  const vec = [1.0];
-  for (const p of landmarks) {
-    vec.push(p.x - wrist.x, p.y - wrist.y, p.z - wrist.z);
+  const middleMCP = landmarks[9] || landmarks[5] || wrist;
+  const palmSpan = Math.max(
+    Math.hypot(
+      middleMCP.x - wrist.x,
+      middleMCP.y - wrist.y,
+      (middleMCP.z || 0) - (wrist.z || 0)
+    ),
+    0.04
+  );
+
+  const vec = [1.0]; // [0] = hand present
+  for (let i = 0; i < 21; i++) {
+    const p = landmarks[i] || wrist;
+    // Normalized position relative to wrist in palmSpan units
+    vec.push(
+      (p.x - wrist.x) / palmSpan,
+      (p.y - wrist.y) / palmSpan,
+      ((p.z || 0) - (wrist.z || 0)) / palmSpan
+    );
   }
   vec.push(wrist.x, wrist.y);
   return vec;
@@ -105,47 +119,79 @@ function extractDualHandFeature(allLandmarks, handednesses) {
   return [...leftVec, ...rightVec, ...interRel];
 }
 
+function handVectorDistance(vecA, vecB) {
+  const aPres = vecA && vecA[0] > 0.5;
+  const bPres = vecB && vecB[0] > 0.5;
+  if (!aPres || !bPres) return 2.0;
+
+  // Auto-normalize legacy coordinates if saved before palm-span normalization
+  let scaleA = 1.0;
+  let scaleB = 1.0;
+  const tipA = Math.hypot(vecA[28], vecA[29]);
+  const tipB = Math.hypot(vecB[28], vecB[29]);
+  if (tipA > 0.04 && tipA < 0.45) scaleA = 1.0 / tipA;
+  if (tipB > 0.04 && tipB < 0.45) scaleB = 1.0 / tipB;
+
+  let sumDirect = 0;
+  let sumMirror = 0;
+
+  for (let i = 0; i < 21; i++) {
+    const ax = vecA[1 + i * 3] * scaleA;
+    const ay = vecA[1 + i * 3 + 1] * scaleA;
+    const az = vecA[1 + i * 3 + 2] * scaleA;
+
+    const bx = vecB[1 + i * 3] * scaleB;
+    const by = vecB[1 + i * 3 + 1] * scaleB;
+    const bz = vecB[1 + i * 3 + 2] * scaleB;
+
+    const dxD = ax - bx;
+    const dyD = ay - by;
+    const dzD = az - bz;
+    sumDirect += dxD * dxD + dyD * dyD + dzD * dzD;
+
+    // Mirrored (horizontal flip invariance)
+    const dxM = ax - (-bx);
+    sumMirror += dxM * dxM + dyD * dyD + dzD * dzD;
+  }
+
+  const dDirect = Math.sqrt(sumDirect / 21);
+  const dMirror = Math.sqrt(sumMirror / 21);
+  return Math.min(dDirect, dMirror);
+}
+
+function getActiveHandVecs(frame) {
+  if (!frame) return [];
+  const leftPres = frame[0] > 0.5;
+  const rightPres = frame[66] > 0.5;
+  const hands = [];
+  if (leftPres) hands.push(frame.slice(0, 66));
+  if (rightPres) hands.push(frame.slice(66, 132));
+  return hands;
+}
+
 function frameDistance(a, b) {
-  let dist = 0;
+  if (!a || !b) return 2.0;
+  const handsA = getActiveHandVecs(a);
+  const handsB = getActiveHandVecs(b);
 
-  const aL_present = a[0] > 0.5;
-  const bL_present = b[0] > 0.5;
-  if (aL_present !== bL_present) {
-    dist += 3.0;
-  } else if (aL_present && bL_present) {
-    let sumL = 0;
-    for (let i = 1; i < 66; i++) {
-      const diff = a[i] - b[i];
-      sumL += diff * diff;
-    }
-    dist += Math.sqrt(sumL);
+  if (handsA.length === 0 || handsB.length === 0) {
+    return 2.0;
   }
 
-  const aR_present = a[66] > 0.5;
-  const bR_present = b[66] > 0.5;
-  if (aR_present !== bR_present) {
-    dist += 3.0;
-  } else if (aR_present && bR_present) {
-    let sumR = 0;
-    for (let i = 67; i < 132; i++) {
-      const diff = a[i] - b[i];
-      sumR += diff * diff;
-    }
-    dist += Math.sqrt(sumR);
+  // Single hand in both: compare directly regardless of MediaPipe Left/Right categorization
+  if (handsA.length === 1 && handsB.length === 1) {
+    return handVectorDistance(handsA[0], handsB[0]);
   }
 
-  const aBoth = a[132] > 0.5;
-  const bBoth = b[132] > 0.5;
-  if (aBoth && bBoth) {
-    let sumInter = 0;
-    for (let i = 133; i < 136; i++) {
-      const diff = a[i] - b[i];
-      sumInter += diff * diff;
-    }
-    dist += Math.sqrt(sumInter) * 1.5;
+  // Dual hand in both: compare direct and cross pairings
+  if (handsA.length >= 2 && handsB.length >= 2) {
+    const dDirect = (handVectorDistance(handsA[0], handsB[0]) + handVectorDistance(handsA[1], handsB[1])) / 2;
+    const dCross = (handVectorDistance(handsA[0], handsB[1]) + handVectorDistance(handsA[1], handsB[0])) / 2;
+    return Math.min(dDirect, dCross);
   }
 
-  return dist;
+  // Hand count mismatch
+  return 1.8;
 }
 
 function resampleClip(rawFrames) {
@@ -160,11 +206,25 @@ function resampleClip(rawFrames) {
 }
 
 function clipDistance(clipA, clipB) {
-  let sum = 0;
-  for (let i = 0; i < CLIP_FRAMES; i++) {
-    sum += frameDistance(clipA[i], clipB[i]);
+  if (!clipA || !clipB || clipA.length === 0 || clipB.length === 0) return 999;
+
+  let sumTrajectory = 0;
+  const nFrames = Math.min(clipA.length, clipB.length);
+  for (let i = 0; i < nFrames; i++) {
+    sumTrajectory += frameDistance(clipA[i], clipB[i]);
   }
-  return sum / CLIP_FRAMES;
+  const trajectoryDist = sumTrajectory / nFrames;
+
+  // Best single keyframe match (handles static held signs)
+  let bestSingleDist = Infinity;
+  for (let i = 0; i < clipA.length; i++) {
+    for (let j = 0; j < clipB.length; j++) {
+      const d = frameDistance(clipA[i], clipB[j]);
+      if (d < bestSingleDist) bestSingleDist = d;
+    }
+  }
+
+  return Math.min(trajectoryDist, bestSingleDist * 1.12);
 }
 
 export default function LiveSign() {
@@ -176,13 +236,7 @@ export default function LiveSign() {
   const [handsBadgeText, setHandsBadgeText] = useState('No hands detected');
   const [handsBadgeClass, setHandsBadgeClass] = useState('hands-badge');
 
-  // ---------- Recognition Mode & Multilingual Settings ----------
-  const [recognitionMode, setRecognitionMode] = useState('hybrid'); // 'hybrid' | 'standard' | 'personalized'
-  const recognitionModeRef = useRef('hybrid');
-  useEffect(() => {
-    recognitionModeRef.current = recognitionMode;
-  }, [recognitionMode]);
-
+  // ---------- Multilingual Speech Settings ----------
   const [selectedLanguage, setSelectedLanguage] = useState(() => {
     return localStorage.getItem('hearaid_lang') || 'en-US';
   });
@@ -241,19 +295,6 @@ export default function LiveSign() {
   const [recognizedOutput, setRecognizedOutput] = useState('—');
   const [translatedOutput, setTranslatedOutput] = useState(null);
 
-  // Real-time live sign continuous stream state
-  const [liveTrackingToken, setLiveTrackingToken] = useState('—');
-  const [liveAssembledSentence, setLiveAssembledSentence] = useState('');
-  const [liveTranslatedSentence, setLiveTranslatedSentence] = useState('');
-  const [isLiveTranslating, setIsLiveTranslating] = useState(false);
-  const [streamMode, setStreamMode] = useState('spelling'); // 'spelling' (letters only) | 'all'
-  const streamRef = useRef(new RealtimeSignStream({ stabilityThreshold: 5, mode: 'spelling' }));
-  useEffect(() => {
-    if (streamRef.current) {
-      streamRef.current.setMode(streamMode);
-    }
-  }, [streamMode]);
-
   const [listening, setListening] = useState(false);
   const [captionText, setCaptionText] = useState('Transcript will appear here…');
   const [logEntries, setLogEntries] = useState([]);
@@ -300,7 +341,11 @@ export default function LiveSign() {
           best = ex.label;
         }
       }
-      return bestDist <= THRESHOLD ? best : null;
+      if (bestDist <= MATCH_THRESHOLD) {
+        const conf = Math.max(0.65, Math.min(0.99, 1 - bestDist / (MATCH_THRESHOLD * 1.5)));
+        return { label: best, confidence: conf, dist: bestDist };
+      }
+      return null;
     },
     [examples]
   );
@@ -345,62 +390,6 @@ export default function LiveSign() {
     },
     [speechMuted, speechRate, addLog]
   );
-
-  const handleLiveTranslation = useCallback(
-    async (englishText) => {
-      if (!englishText || !englishText.trim()) return;
-      const clean = englishText.trim();
-      const currentLang = selectedLanguageRef.current;
-      const langObj =
-        SUPPORTED_LANGUAGES.find((l) => l.code === currentLang) || SUPPORTED_LANGUAGES[0];
-
-      setIsLiveTranslating(true);
-      let translated = clean;
-      if (currentLang !== 'en') {
-        translated = await translateWithGoogle(clean, currentLang, 'en');
-      }
-      setIsLiveTranslating(false);
-
-      setLiveTranslatedSentence(translated);
-
-      if (!speechMuted) {
-        speakInLanguage(translated, currentLang, { rate: speechRate });
-      }
-
-      addLog(
-        'sign',
-        `Live Stream: "${clean}" → [${langObj.flag} ${langObj.name}] "${translated}"`
-      );
-    },
-    [speechMuted, speechRate, addLog]
-  );
-
-  const handleSpace = () => {
-    const updated = streamRef.current.commitSpace();
-    setLiveAssembledSentence(updated);
-    if (updated) handleLiveTranslation(updated);
-  };
-
-  const handleBackspace = () => {
-    const updated = streamRef.current.backspace();
-    setLiveAssembledSentence(updated);
-    if (updated) handleLiveTranslation(updated);
-  };
-
-  const handleClearStream = () => {
-    streamRef.current.clear();
-    setLiveAssembledSentence('');
-    setLiveTranslatedSentence('');
-    setLiveTrackingToken('—');
-  };
-
-  const handleSpeakCurrent = () => {
-    if (liveTranslatedSentence) {
-      speakInLanguage(liveTranslatedSentence, selectedLanguage, { rate: speechRate });
-    } else if (liveAssembledSentence) {
-      handleLiveTranslation(liveAssembledSentence);
-    }
-  };
 
   const drawAllHands = useCallback((allLandmarks) => {
     const canvas = canvasRef.current;
@@ -498,52 +487,48 @@ export default function LiveSign() {
           recordedFramesRef.current.push(featureVec);
         }
 
-        // Live classification if recognizing is active
+        // Live classification in a single unified engine (Personalized + Standard)
         if (recognizingRef.current) {
-          const currentMode = recognitionModeRef.current;
+          let matchedSign = null;
+          let matchIcon = '✋';
+          let matchSource = 'Standard';
 
-          // 1. Standard Real-Time Sign Tracking & Conversion Stream
-          if (currentMode === 'standard' || currentMode === 'hybrid') {
-            const realtimeMatch = classifyRealtimeSign(detectedHands);
-            if (realtimeMatch) {
-              const liveDisplay = `${realtimeMatch.icon || '✋'} ${realtimeMatch.token}`;
-              setLiveTrackingToken(liveDisplay);
-              const streamRes = streamRef.current.feed(realtimeMatch);
-              if (streamRes.newCommit) {
-                setRecognizedOutput(`${streamRes.newCommit.icon || '✋'} ${streamRes.newCommit.token}`);
-                handleRecognized(
-                  streamRes.newCommit.token,
-                  streamRes.newCommit.icon || '✋',
-                  streamRes.newCommit.type === 'letter' ? 'Alphabet' : 'Standard Sign'
-                );
-
-                const fullText = streamRef.current.getFullText();
-                setLiveAssembledSentence(fullText);
-                if (streamRes.newCommit.type === 'word' || fullText.length >= 3) {
-                  handleLiveTranslation(fullText);
-                }
-              }
-            } else {
-              setLiveTrackingToken('—');
-            }
-          }
-
-          // 2. Personalized Sign Recognition (Trained motion clip classifier)
-          if (
-            (currentMode === 'personalized' || currentMode === 'hybrid') &&
-            now - lastRecognizeAtRef.current >= RECOGNIZE_EVERY_MS
-          ) {
+          // 1. Check Personalized trained signs first
+          if (examples.length > 0 && now - lastRecognizeAtRef.current >= RECOGNIZE_EVERY_MS) {
             lastRecognizeAtRef.current = now;
             const recent = rollingBufferRef.current.filter((f) => now - f.t <= CLIP_DURATION_MS);
             if (recent.length >= MIN_FRAMES_REQUIRED) {
               const clip = resampleClip(recent.map((f) => f.vec));
               if (clip) {
-                const label = classifyClip(clip);
-                if (label) {
-                  handleRecognized(label, '🎯', 'Custom Trained');
+                const customMatch = classifyClip(clip);
+                if (customMatch) {
+                  matchedSign = customMatch.label || customMatch;
+                  matchIcon = '🎯';
+                  matchSource = 'Personalized';
                 }
               }
             }
+          }
+
+          // 2. Check Standard live signs / alphabet if no custom sign matched
+          if (!matchedSign) {
+            const realtimeMatch = classifyRealtimeSign(detectedHands);
+            if (realtimeMatch) {
+              const filtered = standardFilterRef.current.process({ sign: realtimeMatch.token });
+              if (filtered) {
+                matchedSign = realtimeMatch.token;
+                matchIcon = realtimeMatch.icon || '📘';
+                matchSource = realtimeMatch.type === 'letter' ? 'Standard Alphabet' : 'Standard Sign';
+              }
+            } else {
+              standardFilterRef.current.reset();
+            }
+          }
+
+          // 3. Emit recognized sign & voice translation
+          if (matchedSign) {
+            setRecognizedOutput(`${matchIcon} ${matchedSign}`);
+            handleRecognized(matchedSign, matchIcon, matchSource);
           }
         }
       } else {
@@ -556,7 +541,7 @@ export default function LiveSign() {
     }
 
     animFrameRef.current = requestAnimationFrame(predictLoop);
-  }, [drawAllHands, classifyClip, handleRecognized, handleLiveTranslation, updateHandsBadge]);
+  }, [drawAllHands, classifyClip, handleRecognized, updateHandsBadge, examples]);
 
   useEffect(() => {
     let isMounted = true;
@@ -870,7 +855,7 @@ export default function LiveSign() {
           backdrop-filter: blur(16px);
           border: 1px solid var(--border-light, rgba(255,255,255,0.1));
           border-radius: 14px;
-          padding: 18px;
+          padding: 20px;
           color: var(--text-primary, #ffffff);
           box-shadow: 0 4px 20px rgba(0,0,0,0.15);
         }
@@ -910,44 +895,12 @@ export default function LiveSign() {
           object-fit: cover;
           transform: scaleX(-1);
         }
-        .mode-selector-bar {
-          display: flex;
-          gap: 8px;
-          background: rgba(0,0,0,0.25);
-          padding: 6px;
-          border-radius: 10px;
-          border: 1px solid var(--border-light, rgba(255,255,255,0.1));
-          margin-bottom: 14px;
-          flex-wrap: wrap;
-        }
-        .mode-btn {
-          flex: 1;
-          min-width: 130px;
-          padding: 8px 12px;
-          border: none;
-          background: transparent;
-          color: var(--text-secondary, #94a3b8);
-          border-radius: 6px;
-          font-size: 13px;
-          font-weight: 500;
-          cursor: pointer;
-          transition: all 0.2s;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 6px;
-        }
-        .mode-btn.active {
-          background: var(--accent-cyan, #06b6d4);
-          color: #fff;
-          box-shadow: 0 2px 10px rgba(6, 182, 212, 0.4);
-        }
         .multilingual-bar {
           background: rgba(0,0,0,0.22);
           border: 1px solid var(--border-light, rgba(255,255,255,0.1));
           border-radius: 10px;
-          padding: 12px 14px;
-          margin-bottom: 16px;
+          padding: 10px 14px;
+          margin-bottom: 4px;
           display: flex;
           flex-wrap: wrap;
           align-items: center;
@@ -958,13 +911,18 @@ export default function LiveSign() {
           color: #fff;
           border: 1px solid rgba(255,255,255,0.2);
           border-radius: 8px;
-          padding: 7px 10px;
+          padding: 6px 10px;
           font-size: 13px;
           cursor: pointer;
           outline: none;
         }
         .lang-select:focus {
           border-color: var(--accent-cyan, #06b6d4);
+        }
+        .record-row {
+          display: flex;
+          justify-content: center;
+          margin-bottom: 14px;
         }
         .train-controls {
           display: flex;
@@ -987,7 +945,7 @@ export default function LiveSign() {
           color: white;
           border: none;
           border-radius: 8px;
-          padding: 10px 16px;
+          padding: 10px 18px;
           font-size: 14px;
           font-weight: 500;
           cursor: pointer;
@@ -1082,42 +1040,24 @@ export default function LiveSign() {
           padding: 5px 10px;
           border-radius: 16px;
         }
-        .recognition-card {
-          background: linear-gradient(135deg, rgba(6, 182, 212, 0.12), rgba(88, 28, 135, 0.12));
-          border: 1px solid rgba(6, 182, 212, 0.3);
-          border-radius: 12px;
-          padding: 16px;
-          margin-top: 14px;
+        .toggle-row {
           display: flex;
-          flex-direction: column;
-          gap: 10px;
-        }
-        .recognition-header {
-          display: flex;
-          justify-content: space-between;
           align-items: center;
-          font-size: 12px;
-          color: #38BDF8;
-        }
-        .recognition-body {
-          display: flex;
-          align-items: baseline;
           gap: 12px;
           flex-wrap: wrap;
         }
-        .recognized-main {
-          font-size: 26px;
-          font-weight: 700;
-          color: #fff;
-          font-family: 'Space Grotesk', sans-serif;
-        }
-        .translated-sub {
+        .output-text {
+          background: rgba(0,0,0,0.3);
+          border: 1px solid var(--border-light, rgba(255,255,255,0.15));
+          border-radius: 8px;
+          padding: 10px 14px;
           font-size: 18px;
-          color: #A5F3FC;
-          font-weight: 500;
+          min-height: 44px;
+          flex: 1;
+          min-width: 180px;
+          color: var(--text-primary, #ffffff);
           display: flex;
           align-items: center;
-          gap: 6px;
         }
         .log-list {
           display: flex;
@@ -1234,7 +1174,7 @@ export default function LiveSign() {
             <div>
               <h1>HearAid Live Sign</h1>
               <p className="tagline">
-                Real-time Standard &amp; Personalized Sign Recognition with Multilingual Speech
+                Real-time dual-hand tracking &amp; AI sign interpreter (Standard &amp; Personalized).
               </p>
             </div>
             <button
@@ -1257,107 +1197,71 @@ export default function LiveSign() {
                 color: '#38bdf8'
               }}
             >
-              ✨ {STANDARD_SIGN_CATALOG.length} Standard Signs Pre-Loaded
+              ⚡ Dual Engine: {examples.length} Custom + {STANDARD_SIGN_CATALOG.length} Standard Signs
             </span>
           </div>
         </header>
 
-        {/* Multilingual Speech & Language Bar */}
+        {/* Multilingual Speech Settings Bar */}
+        <div className="multilingual-bar">
+          <div className="d-flex align-items-center gap-2">
+            <label style={{ fontSize: '13px', color: '#94a3b8', whiteSpace: 'nowrap' }}>
+              Spoken Language:
+            </label>
+            <select
+              className="lang-select"
+              value={selectedLanguage}
+              onChange={(e) => setSelectedLanguage(e.target.value)}
+            >
+              {SUPPORTED_LANGUAGES.map((lang) => (
+                <option key={lang.code} value={lang.code}>
+                  {lang.flag} {lang.name} ({lang.native})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="d-flex align-items-center gap-2">
+            <label style={{ fontSize: '13px', color: '#94a3b8' }}>Speed:</label>
+            <input
+              type="range"
+              min="0.8"
+              max="1.2"
+              step="0.05"
+              value={speechRate}
+              onChange={(e) => setSpeechRate(parseFloat(e.target.value))}
+              style={{ width: '80px', accentColor: 'var(--accent-cyan, #06b6d4)' }}
+            />
+            <span style={{ fontSize: '12px', color: '#cbd5e1' }}>{speechRate.toFixed(2)}x</span>
+          </div>
+
+          <div className="d-flex align-items-center gap-2 ms-auto">
+            <button
+              className="live-btn secondary"
+              style={{ padding: '6px 12px', fontSize: '13px' }}
+              onClick={() => setSpeechMuted(!speechMuted)}
+            >
+              {speechMuted ? '🔇 Unmute' : '🔊 Mute'}
+            </button>
+            <button
+              className="live-btn"
+              style={{ padding: '6px 12px', fontSize: '13px' }}
+              onClick={testCurrentVoice}
+            >
+              📢 Test Voice
+            </button>
+          </div>
+        </div>
+
+        {/* 1. Train a sign & 2. Recognize live */}
         <section className="panel">
-          <h2>
-            <span>🌐</span> Multilingual Speech Settings
-          </h2>
+          <h2>1. Train a sign</h2>
           <p className="hint">
-            HearAid translates detected sign language into your chosen language and speaks it aloud
-            automatically using localized voice synthesis.
+            Press "Record gesture," perform the sign using <strong>one or both hands</strong> in front of
+            the camera (~1.5 seconds — moving signs like "Help", "Thank you", or custom names are
+            supported), then review the clip before saving it. Repeat ~5-10 times per sign for maximum accuracy.
           </p>
 
-          <div className="multilingual-bar">
-            <div className="d-flex align-items-center gap-2">
-              <label style={{ fontSize: '13px', color: '#94a3b8', whiteSpace: 'nowrap' }}>
-                Spoken Language:
-              </label>
-              <select
-                className="lang-select"
-                value={selectedLanguage}
-                onChange={(e) => setSelectedLanguage(e.target.value)}
-              >
-                {SUPPORTED_LANGUAGES.map((lang) => (
-                  <option key={lang.code} value={lang.code}>
-                    {lang.flag} {lang.name} ({lang.native})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="d-flex align-items-center gap-2">
-              <label style={{ fontSize: '13px', color: '#94a3b8' }}>Speed:</label>
-              <input
-                type="range"
-                min="0.8"
-                max="1.2"
-                step="0.05"
-                value={speechRate}
-                onChange={(e) => setSpeechRate(parseFloat(e.target.value))}
-                style={{ width: '80px', accentColor: 'var(--accent-cyan, #06b6d4)' }}
-              />
-              <span style={{ fontSize: '12px', color: '#cbd5e1' }}>{speechRate.toFixed(2)}x</span>
-            </div>
-
-            <div className="d-flex align-items-center gap-2 ms-auto">
-              <button
-                className="live-btn secondary"
-                style={{ padding: '6px 12px', fontSize: '13px' }}
-                onClick={() => setSpeechMuted(!speechMuted)}
-              >
-                {speechMuted ? '🔇 Unmute' : '🔊 Mute'}
-              </button>
-              <button
-                className="live-btn"
-                style={{ padding: '6px 12px', fontSize: '13px' }}
-                onClick={testCurrentVoice}
-              >
-                📢 Test Voice
-              </button>
-            </div>
-          </div>
-
-          {/* Mode Switcher */}
-          <div className="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
-            <label style={{ fontSize: '13px', fontWeight: '600', color: '#cbd5e1' }}>
-              Sign Recognition Engine:
-            </label>
-            <span style={{ fontSize: '12px', color: '#38bdf8' }}>
-              {recognitionMode === 'hybrid'
-                ? `⚡ Hybrid: Standard (${STANDARD_SIGN_CATALOG.length}) + Custom (${examples.length})`
-                : recognitionMode === 'standard'
-                ? `📘 Standard ASL (${STANDARD_SIGN_CATALOG.length} signs active)`
-                : `🎯 Personalized (${examples.length} signs active)`}
-            </span>
-          </div>
-
-          <div className="mode-selector-bar">
-            <button
-              className={`mode-btn ${recognitionMode === 'hybrid' ? 'active' : ''}`}
-              onClick={() => setRecognitionMode('hybrid')}
-            >
-              <span>⚡</span> Hybrid (Standard + Custom)
-            </button>
-            <button
-              className={`mode-btn ${recognitionMode === 'standard' ? 'active' : ''}`}
-              onClick={() => setRecognitionMode('standard')}
-            >
-              <span>📘</span> Standard ASL Signs
-            </button>
-            <button
-              className={`mode-btn ${recognitionMode === 'personalized' ? 'active' : ''}`}
-              onClick={() => setRecognitionMode('personalized')}
-            >
-              <span>🎯</span> Personalized Only
-            </button>
-          </div>
-
-          {/* Live Camera Feed */}
           <div className="camera-wrap">
             <video ref={videoRef} autoPlay playsInline muted></video>
             <canvas ref={canvasRef} id="overlay"></canvas>
@@ -1371,335 +1275,6 @@ export default function LiveSign() {
             </div>
           </div>
 
-          {/* Live Recognition Trigger & Output */}
-          <div className="d-flex align-items-center gap-3 flex-wrap">
-            <button
-              id="recognizeBtn"
-              className="live-btn"
-              style={{
-                background: recognizing ? '#EF4444' : 'var(--accent-cyan, #06b6d4)',
-                minWidth: '170px'
-              }}
-              onClick={() => {
-                const next = !recognizing;
-                recognizingRef.current = next;
-                setRecognizing(next);
-                if (!next) {
-                  setRecognizedOutput('—');
-                  setTranslatedOutput(null);
-                  standardFilterRef.current.reset();
-                }
-              }}
-            >
-              {recognizing ? '⏹ Stop Recognition' : '▶ Start Live Recognition'}
-            </button>
-
-            <span style={{ fontSize: '13px', color: '#94a3b8' }}>
-              {recognizing
-                ? '🟢 Active: Hold hands in front of camera to sign'
-                : '⏸ Paused: Click start to begin live interpretation'}
-            </span>
-          </div>
-
-          {/* Real-time Recognition & Multilingual Translation Card */}
-          {recognizing && (
-            <div className="recognition-card">
-              <div className="recognition-header">
-                <span>
-                  {translatedOutput?.source === 'Standard ASL'
-                    ? '📘 Standard Sign Detected'
-                    : translatedOutput?.source === 'Custom Trained'
-                    ? '🎯 Personalized Sign Detected'
-                    : 'Awaiting Hand Gesture…'}
-                </span>
-                {translatedOutput && (
-                  <span>
-                    Translating to {translatedOutput.flag} {translatedOutput.langName}
-                  </span>
-                )}
-              </div>
-              <div className="recognition-body">
-                <div className="recognized-main">
-                  {recognizedOutput !== '—' ? recognizedOutput : 'Signing in progress…'}
-                </div>
-                {translatedOutput && translatedOutput.translated && (
-                  <div className="translated-sub">
-                    <span>→</span>
-                    <span>{translatedOutput.flag}</span>
-                    <span style={{ textDecoration: 'underline' }}>
-                      "{translatedOutput.translated}"
-                    </span>
-                    {!speechMuted && (
-                      <span
-                        style={{ fontSize: '12px', color: '#67e8f9', cursor: 'pointer' }}
-                        title="Replay Voice"
-                        onClick={() =>
-                          speakInLanguage(
-                            translatedOutput.translated || translatedOutput.original,
-                            selectedLanguage,
-                            { rate: speechRate }
-                          )
-                        }
-                      >
-                        🔊
-                      </span>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Real-time Alphabet Tracking Cheatsheet Bar */}
-          {recognizing && (
-            <div
-              style={{
-                marginTop: '12px',
-                padding: '12px 14px',
-                background: 'rgba(15, 23, 42, 0.6)',
-                border: '1px solid rgba(255, 255, 255, 0.08)',
-                borderRadius: '10px'
-              }}
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  marginBottom: '8px',
-                  flexWrap: 'wrap',
-                  gap: '6px'
-                }}
-              >
-                <span style={{ fontSize: '12px', fontWeight: 600, color: '#38bdf8' }}>
-                  🔤 Live Alphabet Tracker (Single-Hand ASL &amp; Dual-Hand ISL/BSL)
-                </span>
-                <span style={{ fontSize: '11px', color: '#94a3b8' }}>
-                  Active Pose:{' '}
-                  <strong style={{ color: '#67e8f9', fontSize: '13px' }}>
-                    {liveTrackingToken !== '—' ? liveTrackingToken : 'Detecting hands…'}
-                  </strong>
-                </span>
-              </div>
-              <div
-                style={{
-                  display: 'flex',
-                  gap: '5px',
-                  overflowX: 'auto',
-                  paddingBottom: '4px',
-                  scrollbarWidth: 'thin'
-                }}
-              >
-                {ALPHABETS_LIST.map((letter) => {
-                  const isCurrent =
-                    (liveTrackingToken && liveTrackingToken.includes(letter)) ||
-                    (recognizedOutput && recognizedOutput.includes(` ${letter}`));
-                  return (
-                    <span
-                      key={letter}
-                      style={{
-                        minWidth: '32px',
-                        height: '32px',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        borderRadius: '6px',
-                        fontSize: '13px',
-                        fontWeight: isCurrent ? '700' : '500',
-                        background: isCurrent ? 'rgba(6, 182, 212, 0.45)' : 'rgba(255, 255, 255, 0.05)',
-                        border: isCurrent
-                          ? '2px solid #38bdf8'
-                          : '1px solid rgba(255, 255, 255, 0.1)',
-                        color: isCurrent ? '#ffffff' : '#94a3b8',
-                        boxShadow: isCurrent ? '0 0 12px rgba(56, 189, 248, 0.65)' : 'none',
-                        transform: isCurrent ? 'scale(1.15)' : 'none',
-                        transition: 'all 0.15s ease'
-                      }}
-                      title={`Sign Letter ${letter}`}
-                    >
-                      {letter}
-                    </span>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Continuous Real-time Sign Tracking & Conversion Stream */}
-          {recognizing && (
-            <div
-              style={{
-                marginTop: '16px',
-                background: 'rgba(15, 23, 42, 0.75)',
-                border: '1px solid rgba(6, 182, 212, 0.35)',
-                borderRadius: '12px',
-                padding: '16px'
-              }}
-            >
-              <div className="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
-                <span style={{ fontSize: '13px', fontWeight: 600, color: '#38bdf8' }}>
-                  ⚡ Live Dynamic Sign Tracking Stream (No Predefined Dataset)
-                </span>
-                <div className="d-flex gap-2 align-items-center flex-wrap">
-                  <div
-                    style={{
-                      background: 'rgba(255, 255, 255, 0.08)',
-                      borderRadius: '20px',
-                      padding: '2px',
-                      display: 'inline-flex',
-                      gap: '2px'
-                    }}
-                  >
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      style={{
-                        borderRadius: '16px',
-                        fontSize: '11px',
-                        padding: '2px 10px',
-                        background: streamMode === 'spelling' ? 'var(--accent-cyan, #06b6d4)' : 'transparent',
-                        color: streamMode === 'spelling' ? '#fff' : '#94a3b8',
-                        border: 'none',
-                        fontWeight: streamMode === 'spelling' ? 700 : 500
-                      }}
-                      onClick={() => setStreamMode('spelling')}
-                      title="Only assemble letters & numbers into clean words, filtering out accidental whole-word signs"
-                    >
-                      🔤 Letter-by-Letter Only
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      style={{
-                        borderRadius: '16px',
-                        fontSize: '11px',
-                        padding: '2px 10px',
-                        background: streamMode === 'all' ? 'var(--accent-cyan, #06b6d4)' : 'transparent',
-                        color: streamMode === 'all' ? '#fff' : '#94a3b8',
-                        border: 'none',
-                        fontWeight: streamMode === 'all' ? 700 : 500
-                      }}
-                      onClick={() => setStreamMode('all')}
-                      title="Include conversational words (Hello, Help, Good) along with letters"
-                    >
-                      💬 All Signs
-                    </button>
-                  </div>
-                  <span
-                    className="badge"
-                    style={{
-                      background: 'rgba(56, 189, 248, 0.2)',
-                      color: '#38bdf8',
-                      fontSize: '11px'
-                    }}
-                  >
-                    Live Pose: {liveTrackingToken || '—'}
-                  </span>
-                </div>
-              </div>
-
-              {/* Real-time Accumulated Sentence Stream */}
-              <div
-                style={{
-                  background: 'rgba(0, 0, 0, 0.35)',
-                  border: '1px solid rgba(255, 255, 255, 0.1)',
-                  borderRadius: '8px',
-                  padding: '12px',
-                  minHeight: '48px',
-                  fontSize: '18px',
-                  fontWeight: 600,
-                  color: '#fff',
-                  letterSpacing: '0.04em',
-                  display: 'flex',
-                  alignItems: 'center'
-                }}
-              >
-                {liveAssembledSentence ? (
-                  liveAssembledSentence
-                ) : (
-                  <span style={{ color: '#64748b', fontSize: '13px', fontWeight: 400 }}>
-                    Sign continuously in front of the camera to assemble words and sentences in
-                    real time...
-                  </span>
-                )}
-              </div>
-
-              {/* Stream Action Controls */}
-              <div className="d-flex gap-2 mt-2 flex-wrap align-items-center">
-                <button
-                  type="button"
-                  className="btn btn-sm btn-outline-info"
-                  onClick={handleSpace}
-                  style={{ fontSize: '12px' }}
-                >
-                  ␣ Space
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-outline-secondary"
-                  onClick={handleBackspace}
-                  style={{ fontSize: '12px' }}
-                >
-                  ⌫ Backspace
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-outline-danger"
-                  onClick={handleClearStream}
-                  style={{ fontSize: '12px' }}
-                >
-                  🗑 Clear
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-info text-dark ms-auto"
-                  onClick={handleSpeakCurrent}
-                  style={{ fontSize: '12px', fontWeight: 600 }}
-                >
-                  📢 Speak Translation
-                </button>
-              </div>
-
-              {/* Google Translate Live Output Banner */}
-              {isLiveTranslating && (
-                <div style={{ marginTop: '8px', fontSize: '12px', color: '#38bdf8' }}>
-                  <i className="fa-solid fa-spinner fa-spin me-1" /> Live Google Translating to {SUPPORTED_LANGUAGES.find((l) => l.code === selectedLanguage)?.name}...
-                </div>
-              )}
-              {liveTranslatedSentence && selectedLanguage !== 'en' && !isLiveTranslating && (
-                <div
-                  style={{
-                    marginTop: '12px',
-                    padding: '10px 14px',
-                    background: 'rgba(6, 182, 212, 0.12)',
-                    border: '1px solid rgba(6, 182, 212, 0.3)',
-                    borderRadius: '8px'
-                  }}
-                >
-                  <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '2px' }}>
-                    🌐 Google Translated Output (
-                    {SUPPORTED_LANGUAGES.find((l) => l.code === selectedLanguage)?.name}):
-                  </div>
-                  <div style={{ fontSize: '16px', fontWeight: 600, color: '#67e8f9' }}>
-                    {SUPPORTED_LANGUAGES.find((l) => l.code === selectedLanguage)?.flag} "
-                    {liveTranslatedSentence}"
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </section>
-
-        {/* Personalized Sign Training Panel */}
-        <section className="panel">
-          <h2>
-            <span>🎯</span> Train Personalized Signs
-          </h2>
-          <p className="hint">
-            Want to teach HearAid a custom gesture or personalized name sign? Record your hand
-            movement for 1.5 seconds, label it, and review before saving.
-          </p>
-
           <div className="record-row">
             <button
               id="recordBtn"
@@ -1707,14 +1282,14 @@ export default function LiveSign() {
               onClick={startRecording}
               disabled={isRecording}
             >
-              ● Record Custom Sign (1.5s)
+              ● Record gesture (1.5s)
             </button>
           </div>
 
           {/* Review panel: shown after recording */}
           {showReview && (
             <div id="reviewPanel" className="review-panel">
-              <h3>Review your recording</h3>
+              <h3 style={{ fontSize: '15px', marginBottom: '10px' }}>Review your recording</h3>
               {reviewVideoURL && (
                 <video
                   ref={reviewVideoRef}
@@ -1732,28 +1307,28 @@ export default function LiveSign() {
                 <input
                   id="signLabel"
                   type="text"
-                  placeholder="What does this sign mean? (e.g. Grandma, My Name, Medicine)"
+                  placeholder="e.g. Grandma, Medicine, Water, Help…"
                   value={signLabel}
                   onChange={(e) => setSignLabel(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSaveExample()}
                   autoFocus
                 />
                 <button id="saveExampleBtn" className="live-btn" onClick={handleSaveExample}>
-                  Save Sign
+                  Save sign
                 </button>
                 <button
                   id="discardBtn"
                   className="live-btn secondary"
                   onClick={handleDiscardExample}
                 >
-                  Discard
+                  Discard &amp; retry
                 </button>
               </div>
             </div>
           )}
 
           {/* Trained chips */}
-          <div className="mt-3">
+          <div className="mt-2 mb-3">
             <div className="d-flex justify-content-between align-items-center mb-2">
               <span style={{ fontSize: '13px', fontWeight: '600' }}>Your Trained Signs:</span>
               <span style={{ fontSize: '12px', color: '#94a3b8' }}>
@@ -1762,9 +1337,8 @@ export default function LiveSign() {
             </div>
             <div id="trainedList" className="chip-row align-items-center">
               {Object.keys(trainedCounts).length === 0 ? (
-                <span className="hint">
-                  No custom signs recorded yet. Use the "Record Custom Sign" button above to add
-                  personalized vocabulary!
+                <span className="hint m-0">
+                  No personalized signs trained yet. (Standard signs &amp; alphabet A–Z work automatically below!)
                 </span>
               ) : (
                 Object.entries(trainedCounts).map(([label, n]) => (
@@ -1776,8 +1350,8 @@ export default function LiveSign() {
                       alignItems: 'center',
                       gap: '6px',
                       padding: '5px 12px',
-                      background: 'rgba(6, 182, 212, 0.1)',
-                      borderColor: 'rgba(6, 182, 212, 0.3)'
+                      background: 'rgba(6, 182, 212, 0.12)',
+                      borderColor: 'rgba(6, 182, 212, 0.35)'
                     }}
                   >
                     <span>
@@ -1812,15 +1386,95 @@ export default function LiveSign() {
               )}
             </div>
           </div>
+
+          <h2 className="mt-4">2. Recognize live</h2>
+          <p className="hint">
+            Recognizes <strong>both your personalized custom signs</strong> and <strong>standard sign language / alphabet (A–Z)</strong> in real time simultaneously, then translates and speaks aloud in your chosen language.
+          </p>
+          <div className="toggle-row">
+            <button
+              id="recognizeBtn"
+              className="live-btn"
+              style={{
+                background: recognizing ? '#EF4444' : 'var(--accent-cyan, #06b6d4)',
+                minWidth: '170px'
+              }}
+              onClick={() => {
+                const next = !recognizing;
+                recognizingRef.current = next;
+                setRecognizing(next);
+                if (!next) {
+                  setRecognizedOutput('—');
+                  setTranslatedOutput(null);
+                  standardFilterRef.current.reset();
+                }
+              }}
+            >
+              {recognizing ? 'Stop recognizing' : 'Start recognizing'}
+            </button>
+            <span id="recognizedOutput" className="output-text">
+              {recognizing ? recognizedOutput : '—'}
+            </span>
+          </div>
+
+          {/* Real-time Multilingual Translation Detail Card */}
+          {recognizing && translatedOutput && translatedOutput.translated && (
+            <div
+              style={{
+                marginTop: '12px',
+                padding: '12px 16px',
+                background: 'rgba(6, 182, 212, 0.1)',
+                border: '1px solid rgba(6, 182, 212, 0.3)',
+                borderRadius: '8px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '8px'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+                  {translatedOutput.source}:
+                </span>
+                <span style={{ fontSize: '15px', color: '#fff', fontWeight: 600 }}>
+                  {translatedOutput.original}
+                </span>
+                <span style={{ color: '#38bdf8' }}>→</span>
+                <span style={{ fontSize: '16px', color: '#67e8f9', fontWeight: 700 }}>
+                  {translatedOutput.flag} "{translatedOutput.translated}"
+                </span>
+              </div>
+              {!speechMuted && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  style={{
+                    background: 'rgba(56, 189, 248, 0.2)',
+                    color: '#38bdf8',
+                    fontSize: '12px',
+                    borderRadius: '6px'
+                  }}
+                  onClick={() =>
+                    speakInLanguage(
+                      translatedOutput.translated || translatedOutput.original,
+                      selectedLanguage,
+                      { rate: speechRate }
+                    )
+                  }
+                >
+                  🔊 Replay Voice
+                </button>
+              )}
+            </div>
+          )}
         </section>
 
-        {/* Hearing Person Section */}
+        {/* 3. Hearing person speaks */}
         <section className="panel">
-          <h2>
-            <span>🗣️</span> Hearing Person Speaks
-          </h2>
+          <h2>3. Hearing person speaks</h2>
           <p className="hint">
-            Live speech-to-text captions appear here for deaf/mute individuals to read in real time.
+            Live speech-to-text captions appear here for the deaf/mute person to read.
           </p>
           <div className="d-flex align-items-center gap-2 mb-3">
             <button
@@ -1828,34 +1482,21 @@ export default function LiveSign() {
               className={`live-btn ${listening ? 'recording' : ''}`}
               onClick={toggleSpeechRecognition}
             >
-              {listening ? '🎤 Listening…' : '🎤 Start Listening'}
+              {listening ? '🎤 Listening…' : '🎤 Start listening'}
             </button>
             <span style={{ fontSize: '13px', color: '#94a3b8' }}>
               Recognizing language: <strong>{selectedLanguage}</strong>
             </span>
           </div>
-          <div
-            id="captionBox"
-            style={{
-              background: 'rgba(0,0,0,0.3)',
-              border: '1px solid var(--border-light, rgba(255,255,255,0.1))',
-              borderRadius: '8px',
-              padding: '14px',
-              fontSize: '16px',
-              minHeight: '48px',
-              color: '#fff'
-            }}
-          >
+          <div id="captionBox" className="output-text">
             {captionText}
           </div>
         </section>
 
-        {/* Multilingual Conversation Log */}
+        {/* Conversation log */}
         <section className="panel log-panel">
           <div className="d-flex justify-content-between align-items-center mb-2">
-            <h2 className="m-0">
-              <span>💬</span> Multilingual Conversation Log
-            </h2>
+            <h2 className="m-0">Conversation log</h2>
             {logEntries.length > 0 && (
               <button
                 className="btn btn-sm btn-link text-muted p-0 text-decoration-none"
@@ -1868,7 +1509,7 @@ export default function LiveSign() {
           </div>
           <div id="logList" className="log-list">
             {logEntries.length === 0 ? (
-              <p className="hint">No exchanges yet. Start signing or speaking to see entries.</p>
+              <p className="hint m-0">No exchanges yet. Start signing or speaking to see entries.</p>
             ) : (
               logEntries.map((e) => (
                 <div key={e.id} className="log-item">
@@ -1878,104 +1519,102 @@ export default function LiveSign() {
                       color: e.direction === 'sign' ? '#38BDF8' : '#34D399'
                     }}
                   >
-                    {e.direction === 'sign' ? 'SIGN → SPEECH' : 'SPEECH → TEXT'}
+                    {e.direction === 'sign' ? 'SIGN→SPEECH' : 'SPEECH→TEXT'}
                   </span>
-                  <span style={{ flex: 1 }}>{e.text}</span>
-                  <span style={{ fontSize: '11px', color: '#64748b' }}>{e.time}</span>
+                  <span>{e.text}</span>
                 </div>
               ))
             )}
           </div>
         </section>
 
-        <footer className="live-footer">
-          <p>
-            HearAid · Multilingual AI Sign Interpreter · On-device dual-hand tracking &amp; neural
-            speech synthesis.
-          </p>
-        </footer>
-      </main>
-
-      {/* Standard Signs Catalog / Reference Guide Modal */}
-      {showGuideModal && (
-        <div className="guide-modal-overlay" onClick={() => setShowGuideModal(false)}>
-          <div className="guide-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="guide-modal-header">
-              <h3 className="m-0" style={{ fontSize: '18px', fontWeight: '700' }}>
-                📘 Standard Sign Language Guide ({STANDARD_SIGN_CATALOG.length} Signs)
-              </h3>
-              <button
-                className="btn btn-link text-white p-0"
-                style={{ fontSize: '20px', textDecoration: 'none' }}
-                onClick={() => setShowGuideModal(false)}
-              >
-                ✕
-              </button>
-            </div>
-            <div className="guide-modal-body">
-              {/* Category pills */}
-              <div className="d-flex gap-2 flex-wrap">
-                {categories.map((cat) => (
-                  <button
-                    key={cat}
-                    className="btn btn-sm"
-                    style={{
-                      borderRadius: '20px',
-                      background: guideCategory === cat ? 'var(--accent-cyan, #06b6d4)' : 'rgba(255,255,255,0.08)',
-                      color: guideCategory === cat ? '#fff' : '#cbd5e1',
-                      border: '1px solid rgba(255,255,255,0.1)',
-                      fontSize: '12px'
-                    }}
-                    onClick={() => setGuideCategory(cat)}
-                  >
-                    {cat}
-                  </button>
-                ))}
+        {/* Standard Signs Guide Modal */}
+        {showGuideModal && (
+          <div className="guide-modal-overlay" onClick={() => setShowGuideModal(false)}>
+            <div className="guide-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="guide-modal-header">
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 600 }}>
+                    📖 HearAid Standard Signs Guide
+                  </h3>
+                  <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8' }}>
+                    Reference handbook for built-in signs &amp; alphabet recognized in real time
+                  </p>
+                </div>
+                <button
+                  className="btn btn-sm text-white"
+                  style={{ background: 'rgba(255,255,255,0.1)', borderRadius: '50%' }}
+                  onClick={() => setShowGuideModal(false)}
+                >
+                  ✕
+                </button>
               </div>
 
-              {/* Search */}
-              <input
-                type="text"
-                placeholder="Search signs by name or gesture description…"
-                value={guideSearch}
-                onChange={(e) => setGuideSearch(e.target.value)}
-                style={{
-                  background: 'rgba(0,0,0,0.3)',
-                  border: '1px solid rgba(255,255,255,0.15)',
-                  borderRadius: '8px',
-                  padding: '8px 12px',
-                  color: '#fff',
-                  fontSize: '13px'
-                }}
-              />
+              <div className="guide-modal-body">
+                <div className="d-flex gap-2 flex-wrap">
+                  <input
+                    type="text"
+                    placeholder="Search standard signs..."
+                    value={guideSearch}
+                    onChange={(e) => setGuideSearch(e.target.value)}
+                    style={{
+                      flex: 1,
+                      padding: '8px 12px',
+                      background: 'rgba(0,0,0,0.3)',
+                      border: '1px solid rgba(255,255,255,0.2)',
+                      borderRadius: '8px',
+                      color: '#fff',
+                      fontSize: '13px'
+                    }}
+                  />
+                  <select
+                    className="lang-select"
+                    value={guideCategory}
+                    onChange={(e) => setGuideCategory(e.target.value)}
+                  >
+                    {categories.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-              {/* Catalog Cards Grid */}
-              <div className="catalog-grid">
-                {filteredCatalog.map((item) => (
-                  <div key={item.id} className="catalog-card">
-                    <div className="catalog-card-header">
-                      <span className="catalog-title">
-                        <span>{item.icon}</span> {item.label}
-                      </span>
-                      <span
-                        className="badge"
-                        style={{
-                          background: 'rgba(6, 182, 212, 0.15)',
-                          color: '#38bdf8',
-                          fontSize: '10px'
-                        }}
-                      >
-                        {item.category} · {item.hands}
-                      </span>
+                <div className="catalog-grid">
+                  {filteredCatalog.map((item) => (
+                    <div key={item.id} className="catalog-card">
+                      <div className="catalog-card-header">
+                        <span className="catalog-title">
+                          <span>{item.icon}</span>
+                          <span>{item.label}</span>
+                        </span>
+                        <span
+                          className="badge"
+                          style={{
+                            background: 'rgba(6, 182, 212, 0.2)',
+                            color: '#38bdf8',
+                            fontSize: '10px'
+                          }}
+                        >
+                          {item.hands}
+                        </span>
+                      </div>
+                      <div className="catalog-desc">{item.description}</div>
                     </div>
-                    <p className="catalog-desc m-0">{item.description}</p>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+
+        <footer className="live-footer">
+          <p>
+            HearAid · AI Sign Interpreter · Runs entirely in your browser — on-device dual-hand
+            tracking &amp; multilingual speech translation.
+          </p>
+        </footer>
+      </main>
     </div>
   );
 }
