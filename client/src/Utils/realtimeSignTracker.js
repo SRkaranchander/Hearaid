@@ -354,13 +354,13 @@ export function classifySingleHandSign(h) {
     if (thumbAcrossFingers) {
       return { token: 'S', type: 'letter', confidence: 0.92, icon: '🇸' };
     }
-    // LETTER E: Fingertips resting on top of folded thumb
+    // LETTER T: Thumb tucked upright between index and middle knuckles
+    if (norm(thumbTip, indexMCP) < 0.38 && norm(thumbTip, middleMCP) < 0.38 && thumbTip.y < indexMCP.y) {
+      return { token: 'T', type: 'letter', confidence: 0.93, icon: '🇹' };
+    }
+    // LETTER E: Fingertips resting on top of folded thumb (thumb tucked across palm)
     if (norm(indexTip, thumbTip) < 0.28 && norm(middleTip, thumbTip) < 0.32) {
       return { token: 'E', type: 'letter', confidence: 0.91, icon: '🇪' };
-    }
-    // LETTER T: Thumb tucked between index and middle
-    if (norm(thumbTip, indexMCP) < 0.35 && norm(thumbTip, middleMCP) < 0.35) {
-      return { token: 'T', type: 'letter', confidence: 0.90, icon: '🇹' };
     }
   }
 
@@ -407,23 +407,68 @@ export function classifyDualHandSign(allLandmarks) {
     target = h1;
   }
 
-  // VOWELS (BSL/ISL Two-Handed: Pointer index touches the 5 fingers of target hand)
+  // 1. TWO-HANDED T or X (Both hands have ONLY index finger extended)
+  const isH1OnlyIndex = h1.indexExt && !h1.middleExt && !h1.ringExt && !h1.pinkyExt;
+  const isH2OnlyIndex = h2.indexExt && !h2.middleExt && !h2.ringExt && !h2.pinkyExt;
+
+  if (isH1OnlyIndex && isH2OnlyIndex && wristDist < 3.2) {
+    const tipDist = dist3D(h1.indexTip, h2.indexTip) / palmScale;
+    const dTouch = Math.min(
+      tipDist,
+      dist3D(h1.indexTip, h2.indexPIP) / palmScale,
+      dist3D(h2.indexTip, h1.indexPIP) / palmScale
+    );
+
+    // Direction vectors from MCP to Tip for each index finger
+    const dx1 = h1.indexTip.x - h1.indexMCP.x;
+    const dy1 = h1.indexTip.y - h1.indexMCP.y;
+    const dx2 = h2.indexTip.x - h2.indexMCP.x;
+    const dy2 = h2.indexTip.y - h2.indexMCP.y;
+
+    const isH1Vertical = Math.abs(dy1) > Math.abs(dx1) * 1.1;
+    const isH2Vertical = Math.abs(dy2) > Math.abs(dx2) * 1.1;
+    const isH1Horizontal = Math.abs(dx1) > Math.abs(dy1) * 0.85;
+    const isH2Horizontal = Math.abs(dx2) > Math.abs(dy2) * 0.85;
+
+    // LETTER T: One finger forms vertical stem, other finger forms horizontal crossbar across it!
+    const isTFormation = (isH1Vertical && isH2Horizontal) || (isH2Vertical && isH1Horizontal);
+
+    if (isTFormation && dTouch < 0.75) {
+      return { token: 'T', type: 'letter', confidence: 0.96, icon: '🇹' };
+    }
+
+    // LETTER X: Both index fingers crossed over each other
+    if (tipDist < 0.55) {
+      return { token: 'X', type: 'letter', confidence: 0.94, icon: '🇽' };
+    }
+  }
+
+  // 2. VOWELS (BSL/ISL Two-Handed: Pointer index touches the 5 fingers of an OPEN target hand)
+  // Target hand MUST have other fingers open/extended to be the vowel board!
   // A = Thumb, E = Index, I = Middle, O = Ring, U = Pinky
   if (pointer && target && wristDist < 2.8) {
-    const pTip = pointer.indexTip;
-    const dThumb = dist3D(pTip, target.thumbTip) / palmScale;
-    const dIndex = dist3D(pTip, target.indexTip) / palmScale;
-    const dMiddle = dist3D(pTip, target.middleTip) / palmScale;
-    const dRing = dist3D(pTip, target.ringTip) / palmScale;
-    const dPinky = dist3D(pTip, target.pinkyTip) / palmScale;
+    const isTargetVowelHand =
+      target.middleExt ||
+      target.ringExt ||
+      target.pinkyExt ||
+      target.isAllFourExt;
 
-    const minDist = Math.min(dThumb, dIndex, dMiddle, dRing, dPinky);
-    if (minDist < 0.42) {
-      if (minDist === dThumb) return { token: 'A', type: 'letter', confidence: 0.96, icon: '🅰️' };
-      if (minDist === dIndex) return { token: 'E', type: 'letter', confidence: 0.96, icon: '🇪' };
-      if (minDist === dMiddle) return { token: 'I', type: 'letter', confidence: 0.96, icon: 'ℹ️' };
-      if (minDist === dRing) return { token: 'O', type: 'letter', confidence: 0.96, icon: '🅾️' };
-      if (minDist === dPinky) return { token: 'U', type: 'letter', confidence: 0.96, icon: '🇺' };
+    if (isTargetVowelHand) {
+      const pTip = pointer.indexTip;
+      const dThumb = dist3D(pTip, target.thumbTip) / palmScale;
+      const dIndex = dist3D(pTip, target.indexTip) / palmScale;
+      const dMiddle = dist3D(pTip, target.middleTip) / palmScale;
+      const dRing = dist3D(pTip, target.ringTip) / palmScale;
+      const dPinky = dist3D(pTip, target.pinkyTip) / palmScale;
+
+      const minDist = Math.min(dThumb, dIndex, dMiddle, dRing, dPinky);
+      if (minDist < 0.45) {
+        if (minDist === dThumb) return { token: 'A', type: 'letter', confidence: 0.96, icon: '🅰️' };
+        if (minDist === dIndex) return { token: 'E', type: 'letter', confidence: 0.96, icon: '🇪' };
+        if (minDist === dMiddle) return { token: 'I', type: 'letter', confidence: 0.96, icon: 'ℹ️' };
+        if (minDist === dRing) return { token: 'O', type: 'letter', confidence: 0.96, icon: '🅾️' };
+        if (minDist === dPinky) return { token: 'U', type: 'letter', confidence: 0.96, icon: '🇺' };
+      }
     }
   }
 
