@@ -6,7 +6,6 @@ import * as alphabets from '../Animations/alphabets';
 import { defaultPose } from '../Animations/defaultPose';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
-import SpeechRecognition, { useSpeechRecognition } from 'react-speech-recognition';
 import xbot from '../Models/xbot/xbot.glb';
 import ybot from '../Models/ybot/ybot.glb';
 import xbotPic from '../Models/xbot/xbot.png';
@@ -14,30 +13,21 @@ import ybotPic from '../Models/ybot/ybot.png';
 
 export default function Convert() {
   const [text, setText] = useState('');
+  const [speechText, setSpeechText] = useState('');
   const [inputText, setInputText] = useState('');
+  const [isMicOn, setIsMicOn] = useState(false);
   const [bot, setBot] = useState(ybot);
   const [speed, setSpeed] = useState(0.1);
   const [pause, setPause] = useState(800);
   const [micError, setMicError] = useState('');
   const componentRef = useRef({});
   const { current: ref } = componentRef;
-  const { transcript, listening, resetTranscript, browserSupportsSpeechRecognition } = useSpeechRecognition();
+  const recognitionRef = useRef(null);
   const autoSignTimeout = useRef(null);
-  const lastTranscript = useRef('');
+  const lastSignedSpeech = useRef('');
   const runSignRef = useRef(null);
 
   useEffect(() => { ref.speed = speed; ref.pause = pause; }, [speed, pause, ref]);
-
-  // Speech: auto-animate after 1.5s pause in speaking
-  useEffect(() => {
-    if (!transcript || transcript === lastTranscript.current) return;
-    if (autoSignTimeout.current) clearTimeout(autoSignTimeout.current);
-    autoSignTimeout.current = setTimeout(() => {
-      lastTranscript.current = transcript;
-      runSignRef.current(transcript);
-    }, 1500);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transcript]);
 
   // Setup THREE.js scene
   useEffect(() => {
@@ -68,7 +58,12 @@ export default function Convert() {
       ref.camera.aspect = w2 / h2; ref.camera.updateProjectionMatrix(); ref.renderer.setSize(w2, h2);
     };
     window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      if (recognitionRef.current) {
+        try { recognitionRef.current.abort(); } catch (_) {}
+      }
+    };
   }, [ref, bot]);
 
   ref.animate = () => {
@@ -83,7 +78,7 @@ export default function Convert() {
         } else {
           for (let i = 0; i < ref.animations[0].length;) {
             const [bn, ac, ax, lim, sg] = ref.animations[0][i];
-            const obj = ref.avatar.getObjectByName(bn);
+            const obj = ref.avatar?.getObjectByName(bn);
             if (!obj) { ref.animations[0].splice(i, 1); continue; }
             if (sg === '+' && obj[ac][ax] < lim) { obj[ac][ax] = Math.min(obj[ac][ax] + ref.speed, lim); i++; }
             else if (sg === '-' && obj[ac][ax] > lim) { obj[ac][ax] = Math.max(obj[ac][ax] - ref.speed, lim); i++; }
@@ -111,7 +106,6 @@ export default function Convert() {
       if (!word) return;
       const isLastWord = wi === arr.length - 1;
       if (words[word]) {
-        // Push bone frames first, then add-text so text appears when sign finishes
         words[word](ref);
         ref.animations.push(['add-text', isLastWord ? word : word + ' ']);
       } else {
@@ -120,7 +114,6 @@ export default function Convert() {
           const key = dm[ch] || ch;
           const isLastChar = idx === word.length - 1;
           if (alphabets[key]) alphabets[key](ref);
-          // Show the character after its sign animation frames
           ref.animations.push(['add-text', isLastChar && !isLastWord ? ch + ' ' : ch]);
         });
       }
@@ -131,23 +124,103 @@ export default function Convert() {
 
   const startMic = async () => {
     setMicError('');
-    // Check/request microphone permission explicitly
-    try {
-      await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch (err) {
-      setMicError('Microphone access denied. Please allow mic access in your browser settings.');
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setMicError('Speech recognition is not supported in this browser. Please use Chrome, Edge, or Safari.');
       return;
     }
-    SpeechRecognition.abortListening();
-    setTimeout(() => {
-      resetTranscript();
-      lastTranscript.current = '';
-      SpeechRecognition.startListening({ continuous: true, language: 'en-US', interimResults: true });
-    }, 300);
+
+    try {
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Release tracks immediately so SpeechRecognition has unobstructed mic access
+        stream.getTracks().forEach(t => t.stop());
+      }
+    } catch (err) {
+      setMicError('Microphone access denied. Please allow microphone access in your browser address bar.');
+      return;
+    }
+
+    try {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.abort(); } catch (_) {}
+      }
+
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onstart = () => {
+        setIsMicOn(true);
+        setMicError('');
+      };
+
+      recognition.onresult = (event) => {
+        let transcriptAccum = '';
+        for (let i = 0; i < event.results.length; i++) {
+          transcriptAccum += event.results[i][0].transcript;
+        }
+        if (transcriptAccum) {
+          setSpeechText(transcriptAccum);
+          // Auto animate after 1.5s pause
+          if (autoSignTimeout.current) clearTimeout(autoSignTimeout.current);
+          autoSignTimeout.current = setTimeout(() => {
+            if (transcriptAccum.trim() && transcriptAccum !== lastSignedSpeech.current) {
+              lastSignedSpeech.current = transcriptAccum;
+              runSignRef.current(transcriptAccum);
+            }
+          }, 1500);
+        }
+      };
+
+      recognition.onerror = (event) => {
+        console.warn('Speech recognition event error:', event?.error);
+        if (event?.error === 'not-allowed') {
+          setMicError('Microphone permission blocked. Please click the lock icon in the address bar and allow mic access.');
+          setIsMicOn(false);
+        } else if (event?.error === 'no-speech') {
+          // Normal timeout on silence, keep listening
+        } else {
+          setMicError(`Mic notice: ${event?.error || 'listening'}`);
+        }
+      };
+
+      recognition.onend = () => {
+        // Auto-reconnect if mic state should still be on
+        if (isMicOn && recognitionRef.current) {
+          try {
+            recognitionRef.current.start();
+          } catch (_) {
+            setIsMicOn(false);
+          }
+        } else {
+          setIsMicOn(false);
+        }
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+      setIsMicOn(true);
+    } catch (e) {
+      console.error('Failed to initialize speech recognition:', e);
+      setMicError('Failed to start speech recognition.');
+      setIsMicOn(false);
+    }
   };
 
   const stopMic = () => {
-    SpeechRecognition.abortListening();
+    setIsMicOn(false);
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch (_) {}
+      recognitionRef.current = null;
+    }
+    if (autoSignTimeout.current) clearTimeout(autoSignTimeout.current);
+  };
+
+  const clearSpeech = () => {
+    setSpeechText('');
+    lastSignedSpeech.current = '';
     if (autoSignTimeout.current) clearTimeout(autoSignTimeout.current);
   };
 
@@ -183,15 +256,12 @@ export default function Convert() {
                 {/* Speech */}
                 <div>
                   <label className="field-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span><i className="fa-solid fa-microphone" style={{ marginRight: '6px', color: listening ? 'var(--accent-cyan)' : 'var(--text-muted)' }} />Speech Input</span>
-                    <span style={{ fontSize: '0.72rem', color: listening ? '#22c55e' : 'var(--text-muted)', fontWeight: 600 }}>
-                      {listening ? '● LIVE' : '○ OFF'}
+                    <span><i className="fa-solid fa-microphone" style={{ marginRight: '6px', color: isMicOn ? 'var(--accent-cyan)' : 'var(--text-muted)' }} />Speech Input</span>
+                    <span style={{ fontSize: '0.72rem', color: isMicOn ? '#22c55e' : 'var(--text-muted)', fontWeight: 600 }}>
+                      {isMicOn ? '● LIVE' : '○ OFF'}
                     </span>
                   </label>
 
-                  {!browserSupportsSpeechRecognition && (
-                    <p style={{ color: '#f87171', fontSize: '0.8rem', marginBottom: '8px' }}>⚠ Use Chrome for speech recognition.</p>
-                  )}
                   {micError && (
                     <p style={{ color: '#f87171', fontSize: '0.8rem', marginBottom: '8px' }}>⚠ {micError}</p>
                   )}
@@ -201,7 +271,7 @@ export default function Convert() {
                       <button onClick={startMic}
                         style={{
                           width: '100%', padding: '9px', borderRadius: '10px', border: '1px solid rgba(0,229,255,0.3)',
-                          background: listening ? 'rgba(0,229,255,0.12)' : 'var(--glass-bg)',
+                          background: isMicOn ? 'rgba(0,229,255,0.12)' : 'var(--glass-bg)',
                           color: 'var(--accent-cyan)', cursor: 'pointer', fontFamily: 'DM Sans, sans-serif',
                           fontWeight: 600, fontSize: '0.82rem', transition: 'all 0.25s',
                         }}>
@@ -215,17 +285,17 @@ export default function Convert() {
                       </button>
                     </ClickSpark>
                     <ClickSpark style={{ flex: 1, display: 'flex' }}>
-                      <button onClick={() => { resetTranscript(); lastTranscript.current = ''; }}
+                      <button onClick={clearSpeech}
                         style={{ width: '100%', padding: '9px', borderRadius: '10px', border: '1px solid var(--border-glow)', background: 'var(--glass-bg)', color: 'var(--text-secondary)', cursor: 'pointer', fontFamily: 'DM Sans, sans-serif', fontWeight: 600, fontSize: '0.82rem' }}>
                         Clear
                       </button>
                     </ClickSpark>
                   </div>
 
-                  <textarea rows={3} value={transcript} readOnly className="form-control" style={{ resize: 'none' }} placeholder="Speak something..." />
+                  <textarea rows={3} value={speechText} onChange={e => setSpeechText(e.target.value)} className="form-control" style={{ resize: 'none' }} placeholder="Speak something or click On..." />
 
                   <ClickSpark style={{ display: 'block', width: '100%', marginTop: '10px' }}>
-                    <button onClick={() => runSignRef.current(transcript)} className="btn-neon" style={{ width: '100%', justifyContent: 'center', padding: '11px' }}>
+                    <button onClick={() => runSignRef.current(speechText)} className="btn-neon" style={{ width: '100%', justifyContent: 'center', padding: '11px' }}>
                       <i className="fa-solid fa-play" /><span> Animate Speech</span>
                     </button>
                   </ClickSpark>
@@ -252,8 +322,8 @@ export default function Convert() {
           <motion.div initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.15 }}>
             <div className="avatar-viewport" style={{ position: 'relative' }}>
               <div style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 10, background: 'rgba(0,229,255,0.08)', border: '1px solid rgba(0,229,255,0.2)', borderRadius: '8px', padding: '5px 12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: listening ? '#f87171' : '#22c55e', boxShadow: `0 0 6px ${listening ? '#f87171' : '#22c55e'}`, display: 'inline-block' }} />
-                <span style={{ fontFamily: 'Syne, sans-serif', fontSize: '0.72rem', fontWeight: 700, color: 'var(--accent-cyan)', letterSpacing: '0.08em' }}>{listening ? 'MIC LIVE' : '3D AVATAR LIVE'}</span>
+                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: isMicOn ? '#f87171' : '#22c55e', boxShadow: `0 0 6px ${isMicOn ? '#f87171' : '#22c55e'}`, display: 'inline-block' }} />
+                <span style={{ fontFamily: 'Syne, sans-serif', fontSize: '0.72rem', fontWeight: 700, color: 'var(--accent-cyan)', letterSpacing: '0.08em' }}>{isMicOn ? 'MIC LIVE' : '3D AVATAR LIVE'}</span>
               </div>
               <div id="canvas-convert" style={{ width: '100%', minHeight: 'calc(100vh - 250px)' }} />
             </div>
@@ -308,10 +378,12 @@ export default function Convert() {
                     Type text or use speech to see a real-time 3D sign language demonstration.
                   </p>
                 </div>
+
               </div>
             </div>
           </motion.div>
         </div>
+
       </div>
     </div>
   );

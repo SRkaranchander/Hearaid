@@ -211,7 +211,8 @@ export default function VoiceAssistantWidget() {
 
         try {
             if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-                await navigator.mediaDevices.getUserMedia({ audio: true });
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                stream.getTracks().forEach(track => track.stop());
             }
         } catch (err) {
             console.error("Microphone permission denied:", err);
