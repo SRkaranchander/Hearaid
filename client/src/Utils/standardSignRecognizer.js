@@ -1,14 +1,16 @@
 // HearAid Standard Sign Language Recognition Engine
-// Landmark-geometric classifier for ASL Alphabet & Universal Communication Signs
+// Landmark-geometric classifier for ASL Alphabet, ISL Two-Handed Alphabet, & Universal Communication Signs
+import { classifyRealtimeSign } from './realtimeSignTracker';
 
 export const STANDARD_SIGN_CATALOG = [
+  // --- Universal Signs ---
   {
     id: 'hello',
     label: 'Hello',
     category: 'Greetings',
     icon: '👋',
     hands: '1 Hand',
-    description: 'Open hand upright with all fingers extended, greeting the camera.'
+    description: 'Open hand upright with all 5 fingers extended, greeting the camera.'
   },
   {
     id: 'thank_you',
@@ -24,7 +26,7 @@ export const STANDARD_SIGN_CATALOG = [
     category: 'Response',
     icon: '✊',
     hands: '1 Hand',
-    description: 'Closed fist with firm hand, simulating a nod.'
+    description: 'Closed upright fist, simulating an affirmative nod.'
   },
   {
     id: 'no',
@@ -32,7 +34,7 @@ export const STANDARD_SIGN_CATALOG = [
     category: 'Response',
     icon: '🤏',
     hands: '1 Hand',
-    description: 'Index and middle finger touching thumb in a snap.'
+    description: 'Index and middle fingers snapping down against thumb.'
   },
   {
     id: 'help',
@@ -43,14 +45,6 @@ export const STANDARD_SIGN_CATALOG = [
     description: 'Thumbs up hand resting on flat open palm, or raised thumbs up.'
   },
   {
-    id: 'please',
-    label: 'Please',
-    category: 'Polite',
-    icon: '🤲',
-    hands: '1 Hand',
-    description: 'Flat open palm held in front of chest.'
-  },
-  {
     id: 'i_love_you',
     label: 'I love you',
     category: 'Expressions',
@@ -59,20 +53,12 @@ export const STANDARD_SIGN_CATALOG = [
     description: 'ASL ILY sign: Thumb, Index, and Pinky extended, Middle & Ring folded.'
   },
   {
-    id: 'peace',
-    label: 'Peace',
-    category: 'Expressions',
-    icon: '✌️',
-    hands: '1 Hand',
-    description: 'Index and Middle fingers extended in a V-shape.'
-  },
-  {
     id: 'good',
     label: 'Good',
     category: 'Feedback',
     icon: '👍',
     hands: '1 Hand',
-    description: 'Thumbs up with all 4 fingers closed into a fist.'
+    description: 'Thumbs up with all 4 fingers closed into a firm fist.'
   },
   {
     id: 'bad',
@@ -91,22 +77,6 @@ export const STANDARD_SIGN_CATALOG = [
     description: 'Thumb and Index fingertips touching to form a ring, other 3 extended.'
   },
   {
-    id: 'stop',
-    label: 'Stop',
-    category: 'Alerts',
-    icon: '✋',
-    hands: '1 Hand',
-    description: 'Open flat hand facing forward in a halt gesture.'
-  },
-  {
-    id: 'call_me',
-    label: 'Call me',
-    category: 'Expressions',
-    icon: '🤙',
-    hands: '1 Hand',
-    description: 'Thumb and Pinky extended, middle three fingers folded.'
-  },
-  {
     id: 'water',
     label: 'Water',
     category: 'Daily Needs',
@@ -114,273 +84,221 @@ export const STANDARD_SIGN_CATALOG = [
     hands: '1 Hand',
     description: 'ASL "W" sign: Index, Middle, and Ring extended upright, Thumb holding Pinky.'
   },
+
+  // --- Complete Alphabets A - Z (Both ASL Single-Hand & Convert.js Two-Handed) ---
   {
-    id: 'sign_l',
-    label: 'Letter L',
-    category: 'ASL Alphabet',
-    icon: '🇱',
-    hands: '1 Hand',
-    description: 'Index finger straight up and Thumb out at 90 degrees forming an L.'
+    id: 'sign_a',
+    label: 'A',
+    category: 'Alphabet',
+    icon: '🅰️',
+    hands: '1 or 2 Hands',
+    description: '1 Hand: Fist with thumb upright against side of index. 2 Hands: Index touches thumb.'
   },
   {
     id: 'sign_b',
-    label: 'Letter B',
-    category: 'ASL Alphabet',
+    label: 'B',
+    category: 'Alphabet',
     icon: '🅱️',
+    hands: '1 or 2 Hands',
+    description: '1 Hand: 4 fingers straight up, thumb across palm. 2 Hands: Fingers touch forming circles.'
+  },
+  {
+    id: 'sign_c',
+    label: 'C',
+    category: 'Alphabet',
+    icon: '🇨',
     hands: '1 Hand',
-    description: 'Four fingers upright together, thumb tucked across palm.'
+    description: 'All fingers and thumb curved into an open "C" shape facing sideways.'
+  },
+  {
+    id: 'sign_d',
+    label: 'D',
+    category: 'Alphabet',
+    icon: '🇩',
+    hands: '1 or 2 Hands',
+    description: '1 Hand: Index straight up, others circle with thumb. 2 Hands: Index up, other hand curves.'
+  },
+  {
+    id: 'sign_e',
+    label: 'E',
+    category: 'Alphabet',
+    icon: '🇪',
+    hands: '1 or 2 Hands',
+    description: '1 Hand: Claw/curled fingers over thumb. 2 Hands: Pointer touches index finger tip.'
+  },
+  {
+    id: 'sign_f',
+    label: 'F',
+    category: 'Alphabet',
+    icon: '🇫',
+    hands: '1 or 2 Hands',
+    description: '1 Hand: Thumb & index pinched, 3 up (OK shape). 2 Hands: Crossed index fingers.'
+  },
+  {
+    id: 'sign_g',
+    label: 'G',
+    category: 'Alphabet',
+    icon: '🇬',
+    hands: '1 or 2 Hands',
+    description: '1 Hand: Index and thumb pointing horizontally forward. 2 Hands: Fists together.'
+  },
+  {
+    id: 'sign_h',
+    label: 'H',
+    category: 'Alphabet',
+    icon: '🇭',
+    hands: '1 Hand',
+    description: 'Index and middle fingers extended together pointing horizontally.'
   },
   {
     id: 'sign_i',
-    label: 'Letter I',
-    category: 'ASL Alphabet',
+    label: 'I',
+    category: 'Alphabet',
     icon: 'ℹ️',
-    hands: '1 Hand',
-    description: 'Pinky finger extended upright, all other fingers closed in a fist.'
+    hands: '1 or 2 Hands',
+    description: '1 Hand: Pinky extended upright, others curled. 2 Hands: Pointer touches middle finger tip.'
   },
   {
-    id: 'sign_a',
-    label: 'Letter A',
-    category: 'ASL Alphabet',
-    icon: '🅰️',
+    id: 'sign_k',
+    label: 'K',
+    category: 'Alphabet',
+    icon: '🇰',
     hands: '1 Hand',
-    description: 'Closed fist with thumb resting alongside the index finger.'
+    description: 'Index finger upright, Middle angled forward, thumb tucked in between.'
+  },
+  {
+    id: 'sign_l',
+    label: 'L',
+    category: 'Alphabet',
+    icon: '🇱',
+    hands: '1 Hand',
+    description: 'Index finger straight up and Thumb out at 90 degrees forming an "L".'
+  },
+  {
+    id: 'sign_m',
+    label: 'M',
+    category: 'Alphabet',
+    icon: '🇲',
+    hands: '1 Hand',
+    description: 'Thumb tucked under index, middle, and ring fingers folded over it.'
+  },
+  {
+    id: 'sign_n',
+    label: 'N',
+    category: 'Alphabet',
+    icon: '🇳',
+    hands: '1 Hand',
+    description: 'Thumb tucked under index and middle fingers folded over it.'
+  },
+  {
+    id: 'sign_o',
+    label: 'O',
+    category: 'Alphabet',
+    icon: '🅾️',
+    hands: '1 or 2 Hands',
+    description: '1 Hand: All fingertips and thumb touch in a circular ring. 2 Hands: Index touches ring tip.'
+  },
+  {
+    id: 'sign_p',
+    label: 'P',
+    category: 'Alphabet',
+    icon: '🇵',
+    hands: '1 Hand',
+    description: 'Like "K" but pointing downwards (Index and Middle pointing down).'
+  },
+  {
+    id: 'sign_q',
+    label: 'Q',
+    category: 'Alphabet',
+    icon: '🇶',
+    hands: '1 Hand',
+    description: 'Like "G" but pointing downwards (Index and Thumb pointing down).'
+  },
+  {
+    id: 'sign_r',
+    label: 'R',
+    category: 'Alphabet',
+    icon: '🇷',
+    hands: '1 Hand',
+    description: 'Index and Middle fingers extended upright and crossed over each other.'
+  },
+  {
+    id: 'sign_s',
+    label: 'S',
+    category: 'Alphabet',
+    icon: '🇸',
+    hands: '1 Hand',
+    description: 'Tight fist with thumb folded across the front of the curled fingers.'
+  },
+  {
+    id: 'sign_t',
+    label: 'T',
+    category: 'Alphabet',
+    icon: '🇹',
+    hands: '1 Hand',
+    description: 'Thumb tucked between index and middle fingers in a fist.'
+  },
+  {
+    id: 'sign_u',
+    label: 'U',
+    category: 'Alphabet',
+    icon: '🇺',
+    hands: '1 or 2 Hands',
+    description: '1 Hand: Index & Middle upright together. 2 Hands: Index touches pinky tip.'
+  },
+  {
+    id: 'sign_v',
+    label: 'V',
+    category: 'Alphabet',
+    icon: '✌️',
+    hands: '1 Hand',
+    description: 'Index and Middle fingers spread in a "V" shape (Peace sign).'
+  },
+  {
+    id: 'sign_w',
+    label: 'W',
+    category: 'Alphabet',
+    icon: '🇼',
+    hands: '1 Hand',
+    description: 'Index, Middle, and Ring fingers extended upright in a "W" shape.'
+  },
+  {
+    id: 'sign_x',
+    label: 'X',
+    category: 'Alphabet',
+    icon: '🇽',
+    hands: '1 Hand',
+    description: 'Index finger hooked in a claw/curve while other fingers are in a fist.'
+  },
+  {
+    id: 'sign_y',
+    label: 'Y',
+    category: 'Alphabet',
+    icon: '🤙',
+    hands: '1 Hand',
+    description: 'Thumb and Pinky extended wide ("shaka" / call me sign), 3 middle fingers curled.'
   }
 ];
 
-function dist3D(a, b) {
-  if (!a || !b) return 999;
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  const dz = (a.z || 0) - (b.z || 0);
-  return Math.sqrt(dx * dx + dy * dy + dz * dz);
-}
-
-/**
- * Analyzes finger postures on a single hand landmark set (21 points)
- * Normalizes all measurements relative to palm span (Wrist -> Middle MCP)
- * to ensure complete distance invariance.
- */
-export function analyzeHandPosture(landmarks) {
-  if (!landmarks || landmarks.length < 21) return null;
-
-  const wrist = landmarks[0];
-  const middleMCP = landmarks[9];
-  const palmSize = Math.max(dist3D(wrist, middleMCP), 0.05);
-
-  const norm = (p1, p2) => dist3D(p1, p2) / palmSize;
-
-  // Finger Joint References:
-  // Thumb: 1, 2, 3, 4
-  // Index: 5 (MCP), 6 (PIP), 7 (DIP), 8 (TIP)
-  // Middle: 9, 10, 11, 12
-  // Ring: 13, 14, 15, 16
-  // Pinky: 17, 18, 19, 20
-
-  const thumbTip = landmarks[4];
-  const indexTip = landmarks[8];
-  const middleTip = landmarks[12];
-  const ringTip = landmarks[16];
-  const pinkyTip = landmarks[20];
-
-  const indexMCP = landmarks[5];
-  const middleMCPPt = landmarks[9];
-  const ringMCP = landmarks[13];
-  const pinkyMCP = landmarks[17];
-
-  const indexPIP = landmarks[6];
-  const middlePIP = landmarks[10];
-  const ringPIP = landmarks[14];
-  const pinkyPIP = landmarks[18];
-
-  // Extension status for the 4 fingers
-  const isIndexExt =
-    dist3D(indexTip, wrist) > dist3D(indexPIP, wrist) * 1.15 &&
-    norm(indexTip, indexMCP) > 0.75;
-  const isMiddleExt =
-    dist3D(middleTip, wrist) > dist3D(middlePIP, wrist) * 1.15 &&
-    norm(middleTip, middleMCPPt) > 0.75;
-  const isRingExt =
-    dist3D(ringTip, wrist) > dist3D(ringPIP, wrist) * 1.15 &&
-    norm(ringTip, ringMCP) > 0.75;
-  const isPinkyExt =
-    dist3D(pinkyTip, wrist) > dist3D(pinkyPIP, wrist) * 1.15 &&
-    norm(pinkyTip, pinkyMCP) > 0.75;
-
-  // Thumb status
-  const thumbSpread = norm(thumbTip, indexMCP);
-  const isThumbExt = thumbSpread > 0.65 && norm(thumbTip, wrist) > 0.6;
-  const isThumbUp = isThumbExt && thumbTip.y < wrist.y - 0.25 * palmSize && thumbTip.y < indexMCP.y;
-  const isThumbDown = isThumbExt && thumbTip.y > wrist.y + 0.25 * palmSize;
-
-  // Pinching
-  const thumbIndexDist = norm(thumbTip, indexTip);
-  const isThumbIndexPinching = thumbIndexDist < 0.28;
-
-  // All fingers curled (fist)
-  const isFist = !isIndexExt && !isMiddleExt && !isRingExt && !isPinkyExt;
-
-  // Hand orientation
-  const isHandUpright = middleTip.y < wrist.y;
-
-  return {
-    palmSize,
-    isThumbExt,
-    isThumbUp,
-    isThumbDown,
-    isIndexExt,
-    isMiddleExt,
-    isRingExt,
-    isPinkyExt,
-    isThumbIndexPinching,
-    isFist,
-    isHandUpright,
-    thumbSpread,
-    thumbIndexDist,
-    thumbTip,
-    indexTip,
-    middleTip,
-    ringTip,
-    pinkyTip,
-    wrist,
-    norm
-  };
-}
+export const ALPHABETS_LIST = [
+  'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K',
+  'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U',
+  'V', 'W', 'X', 'Y'
+];
 
 /**
  * Recognizes standard sign gestures from detected hand landmarks.
- * Supports both single-hand and dual-hand gestures.
+ * Delegates to the unified biomechanical real-time classifier.
  */
 export function recognizeStandardSign(allLandmarks) {
-  if (!allLandmarks || allLandmarks.length === 0) return null;
-
-  const h1 = analyzeHandPosture(allLandmarks[0]);
-  if (!h1) return null;
-
-  // Dual-hand recognition
-  if (allLandmarks.length >= 2) {
-    const h2 = analyzeHandPosture(allLandmarks[1]);
-    if (h2) {
-      // HELP sign (dual hand):
-      // One hand is a flat palm facing upwards, the other is a thumbs-up or fist resting on top
-      const isOneFlat =
-        (h1.isIndexExt && h1.isMiddleExt && h1.isRingExt && h1.isPinkyExt && !h1.isThumbUp) ||
-        (h2.isIndexExt && h2.isMiddleExt && h2.isRingExt && h2.isPinkyExt && !h2.isThumbUp);
-      const isOneThumbsUp =
-        (h1.isThumbUp && h1.isFist) || (h2.isThumbUp && h2.isFist);
-
-      const wristDist = dist3D(h1.wrist, h2.wrist) / Math.max(h1.palmSize, h2.palmSize);
-      if (isOneFlat && isOneThumbsUp && wristDist < 2.2) {
-        return { sign: 'Help', confidence: 0.94, icon: '🆘' };
-      }
-    }
-  }
-
-  // Single-hand recognition logic:
-  const {
-    isThumbExt,
-    isThumbUp,
-    isThumbDown,
-    isIndexExt,
-    isMiddleExt,
-    isRingExt,
-    isPinkyExt,
-    isThumbIndexPinching,
-    isFist,
-    isHandUpright,
-    norm,
-    thumbTip,
-    indexTip,
-    middleTip,
-    pinkyTip
-  } = h1;
-
-  // 1. "I Love You" (ILY) Sign: Thumb, Index, Pinky extended; Middle and Ring curled
-  if (isThumbExt && isIndexExt && !isMiddleExt && !isRingExt && isPinkyExt) {
-    return { sign: 'I love you', confidence: 0.96, icon: '🤟' };
-  }
-
-  // 2. "Call Me" Sign: Thumb and Pinky extended; Index, Middle, Ring curled
-  if (isThumbExt && !isIndexExt && !isMiddleExt && !isRingExt && isPinkyExt) {
-    return { sign: 'Call me', confidence: 0.93, icon: '🤙' };
-  }
-
-  // 3. "Letter L": Thumb and Index extended at ~90 deg; Middle, Ring, Pinky curled
-  if (isThumbExt && isIndexExt && !isMiddleExt && !isRingExt && !isPinkyExt) {
-    const spread = norm(thumbTip, indexTip);
-    if (spread > 0.65) {
-      return { sign: 'Letter L', confidence: 0.92, icon: '🇱' };
-    }
-  }
-
-  // 4. "Peace" / "Letter V": Index and Middle extended in V; Ring and Pinky curled
-  if (isIndexExt && isMiddleExt && !isRingExt && !isPinkyExt && !isThumbIndexPinching) {
-    const tipSpread = norm(indexTip, middleTip);
-    if (tipSpread > 0.22) {
-      return { sign: 'Peace', confidence: 0.94, icon: '✌️' };
-    }
-    return { sign: 'Peace', confidence: 0.88, icon: '✌️' };
-  }
-
-  // 5. "Water" / ASL 'W': Index, Middle, and Ring extended upright, Pinky curled & thumb touching pinky
-  if (isIndexExt && isMiddleExt && isRingExt && !isPinkyExt) {
-    return { sign: 'Water', confidence: 0.91, icon: '💧' };
-  }
-
-  // 6. "OK" Sign: Thumb & Index fingertips touching; Middle, Ring, Pinky extended
-  if (isThumbIndexPinching && isMiddleExt && isRingExt && isPinkyExt) {
-    return { sign: 'OK', confidence: 0.95, icon: '👌' };
-  }
-
-  // 7. "Letter I": Pinky extended upright, all other 4 fingers curled into fist
-  if (!isThumbExt && !isIndexExt && !isMiddleExt && !isRingExt && isPinkyExt) {
-    return { sign: 'Letter I', confidence: 0.93, icon: 'ℹ️' };
-  }
-
-  // 8. "Good" / Thumbs Up: Thumb pointing upward, other 4 fingers curled
-  if (isThumbUp && isFist) {
-    return { sign: 'Good', confidence: 0.95, icon: '👍' };
-  }
-
-  // 9. "Bad" / Thumbs Down: Thumb pointing downward, other 4 fingers curled
-  if (isThumbDown && isFist) {
-    return { sign: 'Bad', confidence: 0.93, icon: '👎' };
-  }
-
-  // 10. "Letter B": 4 fingers straight up together, thumb folded across palm
-  if (isIndexExt && isMiddleExt && isRingExt && isPinkyExt && !isThumbExt) {
-    const tipsSpan = norm(indexTip, pinkyTip);
-    if (tipsSpan < 0.75) {
-      return { sign: 'Letter B', confidence: 0.90, icon: '🅱️' };
-    }
-  }
-
-  // 11. "Stop" / Open Hand: All 5 fingers extended upright
-  if (isThumbExt && isIndexExt && isMiddleExt && isRingExt && isPinkyExt && isHandUpright) {
-    return { sign: 'Stop', confidence: 0.94, icon: '✋' };
-  }
-
-  // 12. "No" Sign: Index, Middle, and Thumb fingertips pinched close together
-  if (
-    !isRingExt &&
-    !isPinkyExt &&
-    norm(thumbTip, indexTip) < 0.35 &&
-    norm(thumbTip, middleTip) < 0.35
-  ) {
-    return { sign: 'No', confidence: 0.89, icon: '🤏' };
-  }
-
-  // 13. "Yes" / Fist: All fingers closed tight into fist held upright
-  if (isFist && !isThumbUp && !isThumbDown && isHandUpright) {
-    return { sign: 'Yes', confidence: 0.88, icon: '✊' };
-  }
-
-  // 14. "Letter A": Fist with thumb upright against side of index
-  if (isFist && isThumbExt && thumbTip.y <= h1.wrist.y) {
-    return { sign: 'Letter A', confidence: 0.87, icon: '🅰️' };
-  }
-
-  return null;
+  const match = classifyRealtimeSign(allLandmarks);
+  if (!match) return null;
+  return {
+    sign: match.token,
+    confidence: match.confidence,
+    icon: match.icon || '✋',
+    type: match.type || 'sign'
+  };
 }
 
 /**
@@ -411,8 +329,10 @@ export class SignTemporalFilter {
     const count = this.history.filter((s) => s === recognized.sign).length;
 
     if (count >= this.thresholdCount) {
-      // Avoid immediate spam repetition within 2 seconds for identical gesture
-      if (this.lastEmitted === recognized.sign && now - this.lastEmittedTime < 2200) {
+      // Debounce: allow different signs after 450ms, duplicate after 1800ms
+      const isSame = this.lastEmitted === recognized.sign;
+      const minInterval = isSame ? 1800 : 450;
+      if (now - this.lastEmittedTime < minInterval) {
         return null;
       }
       this.lastEmitted = recognized.sign;

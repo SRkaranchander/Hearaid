@@ -1,7 +1,8 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
   STANDARD_SIGN_CATALOG,
-  SignTemporalFilter
+  SignTemporalFilter,
+  ALPHABETS_LIST
 } from '../Utils/standardSignRecognizer';
 import {
   classifyRealtimeSign,
@@ -12,9 +13,6 @@ import {
   translateWithGoogle,
   speakInLanguage
 } from '../Utils/googleTranslator';
-import {
-  speakMultilingual
-} from '../Utils/multilingualSpeech';
 
 // ---------- Hand Skeleton Connections ----------
 const HAND_CONNECTIONS = [
@@ -304,7 +302,9 @@ export default function LiveSign() {
   const handleRecognized = useCallback(
     async (label, icon = '✋', source = 'Standard') => {
       const now = Date.now();
-      if (label === lastSpokenRef.current.label && now - lastSpokenRef.current.time < 2200) {
+      const isSameLabel = label === lastSpokenRef.current.label;
+      const minGap = isSameLabel ? 1800 : 450;
+      if (now - lastSpokenRef.current.time < minGap) {
         return;
       }
       lastSpokenRef.current = { label, time: now };
@@ -316,7 +316,8 @@ export default function LiveSign() {
       setRecognizedOutput(`${icon} ${label}`);
 
       // Translate in real time using Google Translator
-      const translated = await translateWithGoogle(label, currentLang, 'en');
+      const phraseToTranslate = label.length === 1 ? `Letter ${label}` : label;
+      const translated = await translateWithGoogle(phraseToTranslate, currentLang, 'en');
       setTranslatedOutput({
         original: label,
         translated,
@@ -499,15 +500,26 @@ export default function LiveSign() {
           if (currentMode === 'standard' || currentMode === 'hybrid') {
             const realtimeMatch = classifyRealtimeSign(detectedHands);
             if (realtimeMatch) {
-              setLiveTrackingToken(`${realtimeMatch.icon || '✋'} ${realtimeMatch.token}`);
+              const liveDisplay = `${realtimeMatch.icon || '✋'} ${realtimeMatch.token}`;
+              setLiveTrackingToken(liveDisplay);
+              setRecognizedOutput(liveDisplay);
+
               const streamRes = streamRef.current.feed(realtimeMatch);
               if (streamRes.newCommit) {
+                handleRecognized(
+                  streamRes.newCommit.token,
+                  streamRes.newCommit.icon || '✋',
+                  streamRes.newCommit.type === 'letter' ? 'Alphabet' : 'Standard Sign'
+                );
+
                 const fullText = streamRef.current.getFullText();
                 setLiveAssembledSentence(fullText);
                 if (streamRes.newCommit.type === 'word' || fullText.length >= 3) {
                   handleLiveTranslation(fullText);
                 }
               }
+            } else {
+              setLiveTrackingToken('—');
             }
           }
 
@@ -675,7 +687,7 @@ export default function LiveSign() {
   };
 
   const testCurrentVoice = async () => {
-    await speakMultilingual('Hello, thank you for using HearAid', selectedLanguage, {
+    speakInLanguage('Hello, thank you for using HearAid', selectedLanguage, {
       rate: speechRate
     });
   };
@@ -1417,9 +1429,11 @@ export default function LiveSign() {
                         style={{ fontSize: '12px', color: '#67e8f9', cursor: 'pointer' }}
                         title="Replay Voice"
                         onClick={() =>
-                          speakMultilingual(translatedOutput.original, selectedLanguage, {
-                            rate: speechRate
-                          })
+                          speakInLanguage(
+                            translatedOutput.translated || translatedOutput.original,
+                            selectedLanguage,
+                            { rate: speechRate }
+                          )
                         }
                       >
                         🔊
@@ -1427,6 +1441,81 @@ export default function LiveSign() {
                     )}
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* Real-time Alphabet Tracking Cheatsheet Bar */}
+          {recognizing && (
+            <div
+              style={{
+                marginTop: '12px',
+                padding: '12px 14px',
+                background: 'rgba(15, 23, 42, 0.6)',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                borderRadius: '10px'
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: '8px',
+                  flexWrap: 'wrap',
+                  gap: '6px'
+                }}
+              >
+                <span style={{ fontSize: '12px', fontWeight: 600, color: '#38bdf8' }}>
+                  🔤 Live Alphabet Tracker (Single-Hand ASL &amp; Dual-Hand ISL/BSL)
+                </span>
+                <span style={{ fontSize: '11px', color: '#94a3b8' }}>
+                  Active Pose:{' '}
+                  <strong style={{ color: '#67e8f9', fontSize: '13px' }}>
+                    {liveTrackingToken !== '—' ? liveTrackingToken : 'Detecting hands…'}
+                  </strong>
+                </span>
+              </div>
+              <div
+                style={{
+                  display: 'flex',
+                  gap: '5px',
+                  overflowX: 'auto',
+                  paddingBottom: '4px',
+                  scrollbarWidth: 'thin'
+                }}
+              >
+                {ALPHABETS_LIST.map((letter) => {
+                  const isCurrent =
+                    (liveTrackingToken && liveTrackingToken.includes(letter)) ||
+                    (recognizedOutput && recognizedOutput.includes(` ${letter}`));
+                  return (
+                    <span
+                      key={letter}
+                      style={{
+                        minWidth: '32px',
+                        height: '32px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        borderRadius: '6px',
+                        fontSize: '13px',
+                        fontWeight: isCurrent ? '700' : '500',
+                        background: isCurrent ? 'rgba(6, 182, 212, 0.45)' : 'rgba(255, 255, 255, 0.05)',
+                        border: isCurrent
+                          ? '2px solid #38bdf8'
+                          : '1px solid rgba(255, 255, 255, 0.1)',
+                        color: isCurrent ? '#ffffff' : '#94a3b8',
+                        boxShadow: isCurrent ? '0 0 12px rgba(56, 189, 248, 0.65)' : 'none',
+                        transform: isCurrent ? 'scale(1.15)' : 'none',
+                        transition: 'all 0.15s ease'
+                      }}
+                      title={`Sign Letter ${letter}`}
+                    >
+                      {letter}
+                    </span>
+                  );
+                })}
               </div>
             </div>
           )}
