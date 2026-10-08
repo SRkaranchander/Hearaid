@@ -38,6 +38,7 @@ app.use(express.json());
 const userRoutes = require('./routes/users');
 const messageRoutes = require('./routes/messages');
 const voiceRoutes = require('./routes/voice');
+const translateRoutes = require('./routes/translate');
 
 // Base API route
 app.get(['/api', '/'], (req, res) => {
@@ -53,6 +54,9 @@ app.use('/messages', messageRoutes);
 
 app.use('/api/voice', voiceRoutes);
 app.use('/voice', voiceRoutes);
+
+app.use('/api/translate', translateRoutes);
+app.use('/translate', translateRoutes);
 
 const User = require('./models/User');
 

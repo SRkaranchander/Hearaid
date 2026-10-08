@@ -1,12 +1,18 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
-  recognizeStandardSign,
   STANDARD_SIGN_CATALOG,
   SignTemporalFilter
 } from '../Utils/standardSignRecognizer';
 import {
+  classifyRealtimeSign,
+  RealtimeSignStream
+} from '../Utils/realtimeSignTracker';
+import {
   SUPPORTED_LANGUAGES,
-  translateText,
+  translateWithGoogle,
+  speakInLanguage
+} from '../Utils/googleTranslator';
+import {
   speakMultilingual
 } from '../Utils/multilingualSpeech';
 
@@ -237,6 +243,13 @@ export default function LiveSign() {
   const [recognizedOutput, setRecognizedOutput] = useState('—');
   const [translatedOutput, setTranslatedOutput] = useState(null);
 
+  // Real-time live sign continuous stream state
+  const [liveTrackingToken, setLiveTrackingToken] = useState('—');
+  const [liveAssembledSentence, setLiveAssembledSentence] = useState('');
+  const [liveTranslatedSentence, setLiveTranslatedSentence] = useState('');
+  const [isLiveTranslating, setIsLiveTranslating] = useState(false);
+  const streamRef = useRef(new RealtimeSignStream({ stabilityThreshold: 3 }));
+
   const [listening, setListening] = useState(false);
   const [captionText, setCaptionText] = useState('Transcript will appear here…');
   const [logEntries, setLogEntries] = useState([]);
@@ -302,8 +315,8 @@ export default function LiveSign() {
 
       setRecognizedOutput(`${icon} ${label}`);
 
-      // Translate in real time
-      const translated = await translateText(label, currentLang);
+      // Translate in real time using Google Translator
+      const translated = await translateWithGoogle(label, currentLang, 'en');
       setTranslatedOutput({
         original: label,
         translated,
@@ -315,7 +328,7 @@ export default function LiveSign() {
 
       // Speak in multilingual voice
       if (!speechMuted) {
-        await speakMultilingual(label, currentLang, { rate: speechRate });
+        speakInLanguage(translated, currentLang, { rate: speechRate });
       }
 
       addLog(
@@ -325,6 +338,62 @@ export default function LiveSign() {
     },
     [speechMuted, speechRate, addLog]
   );
+
+  const handleLiveTranslation = useCallback(
+    async (englishText) => {
+      if (!englishText || !englishText.trim()) return;
+      const clean = englishText.trim();
+      const currentLang = selectedLanguageRef.current;
+      const langObj =
+        SUPPORTED_LANGUAGES.find((l) => l.code === currentLang) || SUPPORTED_LANGUAGES[0];
+
+      setIsLiveTranslating(true);
+      let translated = clean;
+      if (currentLang !== 'en') {
+        translated = await translateWithGoogle(clean, currentLang, 'en');
+      }
+      setIsLiveTranslating(false);
+
+      setLiveTranslatedSentence(translated);
+
+      if (!speechMuted) {
+        speakInLanguage(translated, currentLang, { rate: speechRate });
+      }
+
+      addLog(
+        'sign',
+        `Live Stream: "${clean}" → [${langObj.flag} ${langObj.name}] "${translated}"`
+      );
+    },
+    [speechMuted, speechRate, addLog]
+  );
+
+  const handleSpace = () => {
+    const updated = streamRef.current.commitSpace();
+    setLiveAssembledSentence(updated);
+    if (updated) handleLiveTranslation(updated);
+  };
+
+  const handleBackspace = () => {
+    const updated = streamRef.current.backspace();
+    setLiveAssembledSentence(updated);
+    if (updated) handleLiveTranslation(updated);
+  };
+
+  const handleClearStream = () => {
+    streamRef.current.clear();
+    setLiveAssembledSentence('');
+    setLiveTranslatedSentence('');
+    setLiveTrackingToken('—');
+  };
+
+  const handleSpeakCurrent = () => {
+    if (liveTranslatedSentence) {
+      speakInLanguage(liveTranslatedSentence, selectedLanguage, { rate: speechRate });
+    } else if (liveAssembledSentence) {
+      handleLiveTranslation(liveAssembledSentence);
+    }
+  };
 
   const drawAllHands = useCallback((allLandmarks) => {
     const canvas = canvasRef.current;
@@ -426,12 +495,19 @@ export default function LiveSign() {
         if (recognizingRef.current) {
           const currentMode = recognitionModeRef.current;
 
-          // 1. Standard Sign Language Recognition (Instant geometric classification)
+          // 1. Standard Real-Time Sign Tracking & Conversion Stream
           if (currentMode === 'standard' || currentMode === 'hybrid') {
-            const rawStd = recognizeStandardSign(detectedHands);
-            const stableStd = standardFilterRef.current.process(rawStd);
-            if (stableStd) {
-              handleRecognized(stableStd.sign, stableStd.icon, 'Standard ASL');
+            const realtimeMatch = classifyRealtimeSign(detectedHands);
+            if (realtimeMatch) {
+              setLiveTrackingToken(`${realtimeMatch.icon || '✋'} ${realtimeMatch.token}`);
+              const streamRes = streamRef.current.feed(realtimeMatch);
+              if (streamRes.newCommit) {
+                const fullText = streamRef.current.getFullText();
+                setLiveAssembledSentence(fullText);
+                if (streamRes.newCommit.type === 'word' || fullText.length >= 3) {
+                  handleLiveTranslation(fullText);
+                }
+              }
             }
           }
 
@@ -463,7 +539,7 @@ export default function LiveSign() {
     }
 
     animFrameRef.current = requestAnimationFrame(predictLoop);
-  }, [drawAllHands, classifyClip, handleRecognized, updateHandsBadge]);
+  }, [drawAllHands, classifyClip, handleRecognized, handleLiveTranslation, updateHandsBadge]);
 
   useEffect(() => {
     let isMounted = true;
@@ -1352,6 +1428,124 @@ export default function LiveSign() {
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* Continuous Real-time Sign Tracking & Conversion Stream */}
+          {recognizing && (
+            <div
+              style={{
+                marginTop: '16px',
+                background: 'rgba(15, 23, 42, 0.75)',
+                border: '1px solid rgba(6, 182, 212, 0.35)',
+                borderRadius: '12px',
+                padding: '16px'
+              }}
+            >
+              <div className="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+                <span style={{ fontSize: '13px', fontWeight: 600, color: '#38bdf8' }}>
+                  ⚡ Live Dynamic Sign Tracking Stream (No Predefined Dataset)
+                </span>
+                <span
+                  className="badge"
+                  style={{
+                    background: 'rgba(56, 189, 248, 0.2)',
+                    color: '#38bdf8',
+                    fontSize: '11px'
+                  }}
+                >
+                  Live Pose: {liveTrackingToken || '—'}
+                </span>
+              </div>
+
+              {/* Real-time Accumulated Sentence Stream */}
+              <div
+                style={{
+                  background: 'rgba(0, 0, 0, 0.35)',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  borderRadius: '8px',
+                  padding: '12px',
+                  minHeight: '48px',
+                  fontSize: '18px',
+                  fontWeight: 600,
+                  color: '#fff',
+                  letterSpacing: '0.04em',
+                  display: 'flex',
+                  alignItems: 'center'
+                }}
+              >
+                {liveAssembledSentence ? (
+                  liveAssembledSentence
+                ) : (
+                  <span style={{ color: '#64748b', fontSize: '13px', fontWeight: 400 }}>
+                    Sign continuously in front of the camera to assemble words and sentences in
+                    real time...
+                  </span>
+                )}
+              </div>
+
+              {/* Stream Action Controls */}
+              <div className="d-flex gap-2 mt-2 flex-wrap align-items-center">
+                <button
+                  type="button"
+                  className="btn btn-sm btn-outline-info"
+                  onClick={handleSpace}
+                  style={{ fontSize: '12px' }}
+                >
+                  ␣ Space
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-outline-secondary"
+                  onClick={handleBackspace}
+                  style={{ fontSize: '12px' }}
+                >
+                  ⌫ Backspace
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-outline-danger"
+                  onClick={handleClearStream}
+                  style={{ fontSize: '12px' }}
+                >
+                  🗑 Clear
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-info text-dark ms-auto"
+                  onClick={handleSpeakCurrent}
+                  style={{ fontSize: '12px', fontWeight: 600 }}
+                >
+                  📢 Speak Translation
+                </button>
+              </div>
+
+              {/* Google Translate Live Output Banner */}
+              {isLiveTranslating && (
+                <div style={{ marginTop: '8px', fontSize: '12px', color: '#38bdf8' }}>
+                  <i className="fa-solid fa-spinner fa-spin me-1" /> Live Google Translating to {SUPPORTED_LANGUAGES.find((l) => l.code === selectedLanguage)?.name}...
+                </div>
+              )}
+              {liveTranslatedSentence && selectedLanguage !== 'en' && !isLiveTranslating && (
+                <div
+                  style={{
+                    marginTop: '12px',
+                    padding: '10px 14px',
+                    background: 'rgba(6, 182, 212, 0.12)',
+                    border: '1px solid rgba(6, 182, 212, 0.3)',
+                    borderRadius: '8px'
+                  }}
+                >
+                  <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '2px' }}>
+                    🌐 Google Translated Output (
+                    {SUPPORTED_LANGUAGES.find((l) => l.code === selectedLanguage)?.name}):
+                  </div>
+                  <div style={{ fontSize: '16px', fontWeight: 600, color: '#67e8f9' }}>
+                    {SUPPORTED_LANGUAGES.find((l) => l.code === selectedLanguage)?.flag} "
+                    {liveTranslatedSentence}"
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </section>

@@ -10,6 +10,11 @@ import xbot from '../Models/xbot/xbot.glb';
 import ybot from '../Models/ybot/ybot.glb';
 import xbotPic from '../Models/xbot/xbot.png';
 import ybotPic from '../Models/ybot/ybot.png';
+import {
+  translateWithGoogle,
+  speakInLanguage,
+  SUPPORTED_LANGUAGES
+} from '../Utils/googleTranslator';
 
 export default function Convert() {
   const [text, setText] = useState('');
@@ -20,6 +25,17 @@ export default function Convert() {
   const [speed, setSpeed] = useState(0.1);
   const [pause, setPause] = useState(800);
   const [micError, setMicError] = useState('');
+  const [inputLanguage, setInputLanguage] = useState(() => {
+    return localStorage.getItem('hearaid_lang') || 'en';
+  });
+  const [translatedSignText, setTranslatedSignText] = useState('');
+  const [isTranslating, setIsTranslating] = useState(false);
+  const inputLanguageRef = useRef(inputLanguage);
+  useEffect(() => {
+    inputLanguageRef.current = inputLanguage;
+    localStorage.setItem('hearaid_lang', inputLanguage);
+  }, [inputLanguage]);
+
   const componentRef = useRef({});
   const { current: ref } = componentRef;
   const recognitionRef = useRef(null);
@@ -149,7 +165,8 @@ export default function Convert() {
       const recognition = new SpeechRecognition();
       recognition.continuous = false;
       recognition.interimResults = true;
-      recognition.lang = navigator.language || 'en-US';
+      const langObj = SUPPORTED_LANGUAGES.find(l => l.code === inputLanguageRef.current) || SUPPORTED_LANGUAGES[0];
+      recognition.lang = langObj.bcp47 || 'en-US';
 
       recognition.onstart = () => {
         setIsMicOn(true);
@@ -166,12 +183,19 @@ export default function Convert() {
           setSpeechText(cleanText);
           
           if (autoSignTimeout.current) clearTimeout(autoSignTimeout.current);
-          autoSignTimeout.current = setTimeout(() => {
+          autoSignTimeout.current = setTimeout(async () => {
             if (cleanText && cleanText !== lastSignedSpeech.current) {
               lastSignedSpeech.current = cleanText;
-              runSignRef.current(cleanText);
+              let textToSign = cleanText;
+              if (inputLanguageRef.current !== 'en') {
+                setIsTranslating(true);
+                textToSign = await translateWithGoogle(cleanText, 'en', inputLanguageRef.current);
+                setIsTranslating(false);
+              }
+              setTranslatedSignText(textToSign);
+              runSignRef.current(textToSign);
             }
-          }, 1000);
+          }, 800);
         }
       };
 
@@ -225,8 +249,33 @@ export default function Convert() {
 
   const clearSpeech = () => {
     setSpeechText('');
+    setTranslatedSignText('');
     lastSignedSpeech.current = '';
     if (autoSignTimeout.current) clearTimeout(autoSignTimeout.current);
+  };
+
+  const handleAnimateSpeech = async () => {
+    if (!speechText.trim()) return;
+    let textToSign = speechText.trim();
+    if (inputLanguage !== 'en') {
+      setIsTranslating(true);
+      textToSign = await translateWithGoogle(speechText.trim(), 'en', inputLanguage);
+      setIsTranslating(false);
+    }
+    setTranslatedSignText(textToSign);
+    runSignRef.current(textToSign);
+  };
+
+  const handleAnimateText = async () => {
+    if (!inputText.trim()) return;
+    let textToSign = inputText.trim();
+    if (inputLanguage !== 'en') {
+      setIsTranslating(true);
+      textToSign = await translateWithGoogle(inputText.trim(), 'en', inputLanguage);
+      setIsTranslating(false);
+    }
+    setTranslatedSignText(textToSign);
+    runSignRef.current(textToSign);
   };
 
   return (
@@ -252,10 +301,46 @@ export default function Convert() {
             <div style={{ background: 'var(--glass-bg)', backdropFilter: 'blur(20px)', border: '1px solid var(--border-glow)', borderRadius: '16px', padding: '24px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
 
+                {/* Multilingual Input Selector */}
+                <div style={{ background: 'rgba(0,0,0,0.22)', padding: '12px', borderRadius: '12px', border: '1px solid var(--border-light)' }}>
+                  <label className="field-label" style={{ marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <i className="fa-solid fa-globe" style={{ color: 'var(--accent-cyan)' }} />
+                    Spoken / Input Language:
+                  </label>
+                  <select
+                    className="form-select form-select-sm"
+                    style={{ background: 'var(--bg-surface, #1e293b)', color: '#fff', border: '1px solid var(--border-light)', borderRadius: '8px' }}
+                    value={inputLanguage}
+                    onChange={e => {
+                      setInputLanguage(e.target.value);
+                      if (isMicOn) stopMic();
+                    }}
+                  >
+                    {SUPPORTED_LANGUAGES.map(l => (
+                      <option key={l.code} value={l.code}>{l.flag} {l.name} ({l.native})</option>
+                    ))}
+                  </select>
+                  {inputLanguage !== 'en' && (
+                    <small style={{ color: '#38bdf8', fontSize: '0.75rem', marginTop: '6px', display: 'block' }}>
+                      🌐 Live Google Translate: {SUPPORTED_LANGUAGES.find(l => l.code === inputLanguage)?.name} → ASL
+                    </small>
+                  )}
+                </div>
+
                 {/* Processed text */}
                 <div>
-                  <label className="field-label"><i className="fa-solid fa-text-width" style={{ marginRight: '6px', color: 'var(--accent-cyan)' }} />Processed Text</label>
-                  <textarea rows={3} value={text} readOnly className="form-control" style={{ resize: 'none' }} placeholder="Signed text appears here..." />
+                  <label className="field-label"><i className="fa-solid fa-text-width" style={{ marginRight: '6px', color: 'var(--accent-cyan)' }} />Processed Sign Text</label>
+                  <textarea rows={2} value={text} readOnly className="form-control" style={{ resize: 'none' }} placeholder="Signed text appears here..." />
+                  {translatedSignText && inputLanguage !== 'en' && (
+                    <div style={{ marginTop: '6px', padding: '6px 10px', background: 'rgba(6, 182, 212, 0.1)', borderRadius: '8px', border: '1px solid rgba(6, 182, 212, 0.25)', fontSize: '0.78rem', color: '#67e8f9' }}>
+                      <strong>🇬🇧 ASL Gloss:</strong> "{translatedSignText}"
+                    </div>
+                  )}
+                  {isTranslating && (
+                    <div style={{ fontSize: '0.75rem', color: '#38bdf8', marginTop: '4px' }}>
+                      <i className="fa-solid fa-spinner fa-spin" style={{ marginRight: '4px' }} /> Translating with Google...
+                    </div>
+                  )}
                 </div>
 
                 {/* Speech */}
@@ -297,24 +382,38 @@ export default function Convert() {
                     </ClickSpark>
                   </div>
 
-                  <textarea rows={3} value={speechText} onChange={e => setSpeechText(e.target.value)} className="form-control" style={{ resize: 'none' }} placeholder="Speak something or click On..." />
+                  <textarea rows={3} value={speechText} onChange={e => setSpeechText(e.target.value)} className="form-control" style={{ resize: 'none' }} placeholder={`Speak or type in ${SUPPORTED_LANGUAGES.find(l => l.code === inputLanguage)?.name || 'any language'}...`} />
 
-                  <ClickSpark style={{ display: 'block', width: '100%', marginTop: '10px' }}>
-                    <button onClick={() => runSignRef.current(speechText)} className="btn-neon" style={{ width: '100%', justifyContent: 'center', padding: '11px' }}>
-                      <i className="fa-solid fa-play" /><span> Animate Speech</span>
-                    </button>
-                  </ClickSpark>
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                    <ClickSpark style={{ flex: 1, display: 'flex' }}>
+                      <button onClick={handleAnimateSpeech} className="btn-neon" style={{ width: '100%', justifyContent: 'center', padding: '10px', fontSize: '0.84rem' }}>
+                        <i className="fa-solid fa-play" /><span> Animate Speech</span>
+                      </button>
+                    </ClickSpark>
+                    {speechText && (
+                      <button onClick={() => speakInLanguage(speechText, inputLanguage)} style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid var(--border-light)', borderRadius: '10px', color: '#fff', padding: '0 12px', cursor: 'pointer' }} title="Pronounce">
+                        <i className="fa-solid fa-volume-high" />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Text input */}
                 <div>
                   <label className="field-label"><i className="fa-solid fa-keyboard" style={{ marginRight: '6px', color: 'var(--accent-violet)' }} />Text Input</label>
-                  <textarea rows={3} value={inputText} onChange={e => setInputText(e.target.value)} className="form-control" style={{ resize: 'none' }} placeholder="Type text to sign..." />
-                  <ClickSpark style={{ display: 'block', width: '100%', marginTop: '10px' }}>
-                    <button onClick={() => runSignRef.current(inputText)} className="btn-neon" style={{ width: '100%', justifyContent: 'center', padding: '11px', background: 'linear-gradient(135deg, #B895FF, #9E7BFF)' }}>
-                      <i className="fa-solid fa-play" /><span> Animate Text</span>
-                    </button>
-                  </ClickSpark>
+                  <textarea rows={3} value={inputText} onChange={e => setInputText(e.target.value)} className="form-control" style={{ resize: 'none' }} placeholder={`Type in ${SUPPORTED_LANGUAGES.find(l => l.code === inputLanguage)?.name || 'any language'}...`} />
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                    <ClickSpark style={{ flex: 1, display: 'flex' }}>
+                      <button onClick={handleAnimateText} className="btn-neon" style={{ width: '100%', justifyContent: 'center', padding: '10px', background: 'linear-gradient(135deg, #B895FF, #9E7BFF)', fontSize: '0.84rem' }}>
+                        <i className="fa-solid fa-play" /><span> Animate Text</span>
+                      </button>
+                    </ClickSpark>
+                    {inputText && (
+                      <button onClick={() => speakInLanguage(inputText, inputLanguage)} style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid var(--border-light)', borderRadius: '10px', color: '#fff', padding: '0 12px', cursor: 'pointer' }} title="Pronounce">
+                        <i className="fa-solid fa-volume-high" />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
               </div>
