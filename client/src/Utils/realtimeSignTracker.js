@@ -107,8 +107,14 @@ export function trackHandPose(landmarks) {
     norm(indexTip, indexMCP) > 0.38 &&
     norm(indexTip, indexMCP) < 0.85;
 
-  // General postures
-  const isFist = !indexExt && !middleExt && !ringExt && !pinkyExt;
+  // General postures: true fist requires fingers curled tightly towards palm
+  const isFist =
+    indexCurled &&
+    middleCurled &&
+    ringCurled &&
+    pinkyCurled &&
+    norm(indexTip, indexMCP) < 0.60 &&
+    norm(middleTip, middleMCP) < 0.60;
   const isAllFourExt = indexExt && middleExt && ringExt && pinkyExt;
   const isAllFiveExt = isAllFourExt && thumbExt;
 
@@ -275,18 +281,24 @@ export function classifySingleHandSign(h) {
     return { token: 'X', type: 'letter', confidence: 0.92, icon: '🇽' };
   }
 
-  // 12. LETTER C: Curved fingers forming a "C" arc
-  if (!isFist && !isAllFiveExt) {
+  // 12. LETTER C: Curved fingers forming a "C" arc with thumb
+  const thumbIndexArc = norm(thumbTip, indexTip);
+  const indexCurve = norm(indexTip, indexMCP);
+  const middleCurve = norm(middleTip, middleMCP);
+  if (
+    !isAllFiveExt &&
+    !isIndexHooked &&
+    thumbIndexArc > 0.35 &&
+    thumbIndexArc < 1.35 &&
+    indexCurve > 0.42 &&
+    indexCurve < 1.05 &&
+    middleCurve > 0.42 &&
+    middleCurve < 1.05 &&
+    !isPinchingThumbIndex
+  ) {
     const tipSpread = norm(indexTip, middleTip);
-    const thumbIndexArc = norm(thumbTip, indexTip);
-    if (
-      thumbIndexArc > 0.45 &&
-      thumbIndexArc < 1.15 &&
-      tipSpread < 0.35 &&
-      norm(middleTip, middleMCP) > 0.45 &&
-      norm(middleTip, middleMCP) < 0.95
-    ) {
-      return { token: 'C', type: 'letter', confidence: 0.91, icon: '🇨' };
+    if (tipSpread < 0.45) {
+      return { token: 'C', type: 'letter', confidence: 0.94, icon: '🇨' };
     }
   }
 

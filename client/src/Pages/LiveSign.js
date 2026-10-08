@@ -35,7 +35,7 @@ const MIN_FRAMES_REQUIRED = 3; // guard against empty clips
 const RECOGNIZE_EVERY_MS = 150;// continuous recognition throttle
 const VECTOR_SIZE = 136;       // 66 (hand 1) + 66 (hand 2) + 4 (inter-hand relation)
 const RECORD_MS_TRAINING = 1500;
-const MATCH_THRESHOLD = 0.48;  // error threshold in palm-span units
+const MATCH_THRESHOLD = 0.38;  // strict error threshold in palm-span units for full clip trajectory
 
 function singleHandFeature(landmarks) {
   if (!landmarks || landmarks.length === 0) {
@@ -208,23 +208,37 @@ function resampleClip(rawFrames) {
 function clipDistance(clipA, clipB) {
   if (!clipA || !clipB || clipA.length === 0 || clipB.length === 0) return 999;
 
+  const nA = clipA.length;
+  const nB = clipB.length;
+  const nFrames = Math.min(nA, nB);
+
+  // 1. Direct whole-sequence trajectory comparison across all keyframes
   let sumTrajectory = 0;
-  const nFrames = Math.min(clipA.length, clipB.length);
   for (let i = 0; i < nFrames; i++) {
     sumTrajectory += frameDistance(clipA[i], clipB[i]);
   }
   const trajectoryDist = sumTrajectory / nFrames;
 
-  // Best single keyframe match (handles static held signs)
-  let bestSingleDist = Infinity;
-  for (let i = 0; i < clipA.length; i++) {
-    for (let j = 0; j < clipB.length; j++) {
-      const d = frameDistance(clipA[i], clipB[j]);
-      if (d < bestSingleDist) bestSingleDist = d;
+  // 2. Allow slight temporal shift (+-1 frame) for natural signing cadence
+  let bestDist = trajectoryDist;
+  for (const shift of [-1, 1]) {
+    let sumShift = 0;
+    let countShift = 0;
+    for (let i = 0; i < nA; i++) {
+      const j = i + shift;
+      if (j >= 0 && j < nB) {
+        sumShift += frameDistance(clipA[i], clipB[j]);
+        countShift++;
+      }
+    }
+    if (countShift >= nFrames - 1) {
+      const d = sumShift / countShift;
+      if (d < bestDist) bestDist = d;
     }
   }
 
-  return Math.min(trajectoryDist, bestSingleDist * 1.12);
+  // The gesture must match the FULL trajectory across the window, not just a single transition frame!
+  return bestDist;
 }
 
 export default function LiveSign() {
@@ -493,36 +507,41 @@ export default function LiveSign() {
           let matchIcon = '✋';
           let matchSource = 'Standard';
 
-          // 1. Check Personalized trained signs first
+          // 1. Evaluate standard live sign gesture / alphabet
+          const realtimeMatch = classifyRealtimeSign(detectedHands);
+
+          // 2. Evaluate personalized trained motion clip
+          let customMatch = null;
           if (examples.length > 0 && now - lastRecognizeAtRef.current >= RECOGNIZE_EVERY_MS) {
             lastRecognizeAtRef.current = now;
             const recent = rollingBufferRef.current.filter((f) => now - f.t <= CLIP_DURATION_MS);
             if (recent.length >= MIN_FRAMES_REQUIRED) {
               const clip = resampleClip(recent.map((f) => f.vec));
               if (clip) {
-                const customMatch = classifyClip(clip);
-                if (customMatch) {
-                  matchedSign = customMatch.label || customMatch;
-                  matchIcon = '🎯';
-                  matchSource = 'Personalized';
-                }
+                customMatch = classifyClip(clip);
               }
             }
           }
 
-          // 2. Check Standard live signs / alphabet if no custom sign matched
-          if (!matchedSign) {
-            const realtimeMatch = classifyRealtimeSign(detectedHands);
-            if (realtimeMatch) {
-              const filtered = standardFilterRef.current.process({ sign: realtimeMatch.token });
-              if (filtered) {
-                matchedSign = realtimeMatch.token;
-                matchIcon = realtimeMatch.icon || '📘';
-                matchSource = realtimeMatch.type === 'letter' ? 'Standard Alphabet' : 'Standard Sign';
-              }
-            } else {
-              standardFilterRef.current.reset();
+          // Balanced Prioritization:
+          // If a custom clip matches with tight trajectory similarity (dist < 0.32) or no standard sign is detected:
+          if (customMatch && (!realtimeMatch || customMatch.dist < 0.32)) {
+            matchedSign = customMatch.label || customMatch;
+            matchIcon = '🎯';
+            matchSource = 'Personalized';
+          } else if (realtimeMatch) {
+            const filtered = standardFilterRef.current.process({ sign: realtimeMatch.token });
+            if (filtered) {
+              matchedSign = realtimeMatch.token;
+              matchIcon = realtimeMatch.icon || '📘';
+              matchSource = realtimeMatch.type === 'letter' ? 'Standard Alphabet' : 'Standard Sign';
             }
+          } else if (customMatch) {
+            matchedSign = customMatch.label || customMatch;
+            matchIcon = '🎯';
+            matchSource = 'Personalized';
+          } else {
+            standardFilterRef.current.reset();
           }
 
           // 3. Emit recognized sign & voice translation
